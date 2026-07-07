@@ -1,0 +1,29 @@
+{
+  "name": "customer-engagement-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Customer Engagement Platform (MERN stack) — root workspace tooling.",
+  "workspaces": ["backend", "frontend"],
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "lint": "npm run lint --prefix backend && npm run lint --prefix frontend",
+    "lint:fix": "npm run lint:fix --prefix backend && npm run lint:fix --prefix frontend",
+    "format": "prettier --write .",
+    "prepare": "node -e \"try{require('child_process').execSync('git config core.hooksPath customer-engagement-platform/.husky',{stdio:'ignore'})}catch(e){}\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.3.3"
+  },
+  "lint-staged": {
+    "backend/**/*.js": ["eslint --fix", "prettier --write"],
+    "frontend/**/*.{js,jsx}": ["eslint --fix", "prettier --write"],
+    "**/*.{json,md}": ["prettier --write"]
+  },
+  "license": "UNLICENSED"
+}

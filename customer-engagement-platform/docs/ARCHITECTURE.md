@@ -627,3 +627,17 @@ Before implementing any feature
 6. Maintain backward compatibility.
 
 Every new feature should strengthen the architecture rather than bypass it.
+
+## Continuous Improvement Principles
+
+Future development must preserve the existing architecture.
+
+Do not redesign existing modules unless necessary.
+
+Prefer extending existing services over creating duplicate implementations.
+
+Conversation history must remain the single source of truth.
+
+Executives always continue the existing conversation rather than creating a new one.
+
+Tickets are linked to conversations rather than replacing them.

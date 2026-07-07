@@ -1,0 +1,15 @@
+export const ROUTES = {
+  HOME: '/',
+  LOGIN: '/login',
+  DASHBOARD: '/dashboard',
+  ADMIN_DASHBOARD: '/admin/dashboard',
+  ADMIN_KNOWLEDGE: '/admin/knowledge',
+  ADMIN_PROMPTS: '/admin/prompts',
+  ADMIN_AI_SETTINGS: '/admin/ai-settings',
+  ADMIN_WIDGET_SETTINGS: '/admin/widget-settings',
+  ADMIN_EXECUTIVES: '/admin/executives',
+  ADMIN_BUSINESS_HOURS: '/admin/business-hours',
+  ADMIN_ANALYTICS: '/admin/analytics',
+  TICKETS: '/tickets',
+  LEADS: '/leads',
+};

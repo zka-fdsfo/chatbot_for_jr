@@ -1,0 +1,48 @@
+const AI_PROVIDERS = {
+  GROQ: 'groq',
+};
+
+const RESPONSE_LENGTH = {
+  SHORT: 'SHORT',
+  MEDIUM: 'MEDIUM',
+  LONG: 'LONG',
+};
+
+const WIDGET_THEME = {
+  LIGHT: 'LIGHT',
+  DARK: 'DARK',
+};
+
+const WIDGET_POSITION = {
+  BOTTOM_RIGHT: 'BOTTOM_RIGHT',
+  BOTTOM_LEFT: 'BOTTOM_LEFT',
+};
+
+// BUSINESS_HOURS.md §4 — order matters, the weekly schedule is stored and
+// rendered in this fixed Monday-first order.
+const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+
+const HOLIDAY_TYPE = {
+  PUBLIC: 'PUBLIC',
+  COMPANY: 'COMPANY',
+  EMERGENCY: 'EMERGENCY',
+};
+
+// BUSINESS_HOURS.md §7.
+const BUSINESS_STATUS = {
+  OPEN: 'OPEN',
+  CLOSED: 'CLOSED',
+  OPENING_SOON: 'OPENING_SOON',
+  CLOSING_SOON: 'CLOSING_SOON',
+  HOLIDAY: 'HOLIDAY',
+};
+
+module.exports = {
+  AI_PROVIDERS,
+  RESPONSE_LENGTH,
+  WIDGET_THEME,
+  WIDGET_POSITION,
+  DAYS_OF_WEEK,
+  HOLIDAY_TYPE,
+  BUSINESS_STATUS,
+};

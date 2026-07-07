@@ -1,0 +1,11 @@
+const EXECUTIVE_STATUS = {
+  ONLINE: 'ONLINE',
+  OFFLINE: 'OFFLINE',
+  BUSY: 'BUSY',
+  AWAY: 'AWAY',
+  BREAK: 'BREAK',
+};
+
+const DEFAULT_MAX_CHATS = 5;
+
+module.exports = { EXECUTIVE_STATUS, DEFAULT_MAX_CHATS };

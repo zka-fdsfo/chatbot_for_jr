@@ -1,0 +1,12 @@
+const ROLES = {
+  ADMIN: 'ADMIN',
+  EXECUTIVE: 'EXECUTIVE',
+};
+
+const ACCOUNT_STATUS = {
+  ACTIVE: 'ACTIVE',
+  INACTIVE: 'INACTIVE',
+  LOCKED: 'LOCKED',
+};
+
+module.exports = { ROLES, ACCOUNT_STATUS };
