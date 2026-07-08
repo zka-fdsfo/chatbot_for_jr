@@ -56,10 +56,13 @@ const ticketSchema = new mongoose.Schema(
       enum: Object.values(TICKET_SOURCE),
       required: true,
     },
+    // Nullable — a `source: AI` ticket (Conversation Lifecycle Sprint's
+    // auto-escalation) has no human creator; every other source still
+    // always supplies a real user id via the authenticated REST path.
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
     },
     isDeleted: {
       type: Boolean,

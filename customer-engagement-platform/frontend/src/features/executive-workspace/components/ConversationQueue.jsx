@@ -27,11 +27,26 @@ function ConversationQueue({ queue, activeConversationId, onClaim }) {
               key={conversation.conversationId}
               selected={conversation.conversationId === activeConversationId}
               onClick={() => onClaim(conversation.conversationId)}
+              sx={
+                conversation._highlight && {
+                  bgcolor: conversation._highlight === 'transferred' ? 'warning.light' : 'error.light',
+                  borderLeft: '4px solid',
+                  borderLeftColor: conversation._highlight === 'transferred' ? 'warning.main' : 'error.main',
+                }
+              }
             >
               <ListItemText
-                primary={conversation.visitorId}
+                primary={`Visitor ${conversation.visitorId.slice(0, 8)}`}
                 secondary={new Date(conversation.startedAt).toLocaleTimeString()}
               />
+              {conversation._highlight && (
+                <Chip
+                  label={conversation._highlight === 'transferred' ? 'Transferred' : 'New'}
+                  size="small"
+                  color={conversation._highlight === 'transferred' ? 'warning' : 'error'}
+                  sx={{ mr: 1 }}
+                />
+              )}
               <Chip label="Claim" size="small" color="primary" variant="outlined" />
             </ListItemButton>
           ))}

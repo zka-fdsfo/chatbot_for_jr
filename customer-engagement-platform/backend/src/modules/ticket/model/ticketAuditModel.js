@@ -16,10 +16,12 @@ const ticketAuditSchema = new mongoose.Schema(
       enum: Object.values(TICKET_AUDIT_ACTIONS),
       required: true,
     },
+    // Nullable — an audit entry recorded by the AI-escalation flow
+    // (Conversation Lifecycle Sprint) has no human performer.
     performedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
     },
     details: {
       type: mongoose.Schema.Types.Mixed,

@@ -4,6 +4,7 @@ import { SOCKET_EVENTS } from '../../../socket/socketEvents';
 import visitorService from '../../../services/visitorService';
 import analyticsService from '../../../services/analyticsService';
 import { EVENT_TYPE } from '../../../constants/analytics';
+import playNotificationSound from '../../../utils/playNotificationSound';
 import {
   CONNECTION_STATUS,
   SENDER_TYPE,
@@ -13,43 +14,27 @@ import {
   CLOSED_CONVERSATION_STATUSES,
 } from '../constants/chatWidget';
 
+const MAX_TOKEN_RECOVERY_ATTEMPTS = 1;
+
 let nextTempId = 1;
 
-function playNotificationSound() {
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    const context = new AudioContextClass();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-
-    oscillator.type = 'sine';
-    oscillator.frequency.value = 880;
-    gain.gain.setValueAtTime(0.15, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.3);
-
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.3);
-  } catch {
-    // Web Audio unavailable (e.g. a headless test environment) — not critical.
-  }
-}
-
-async function resolveVisitorToken() {
+// Returns the visitor profile alongside the token (not just the token) so
+// the caller can know whether this visitor already has a name/email on
+// file — the visitor-identification form only needs to appear once.
+async function resolveVisitorSession() {
   const storedToken = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
 
   if (storedToken) {
     try {
       const restored = await visitorService.getMySession(storedToken);
-      return restored.visitorToken;
+      return { visitorToken: restored.visitorToken, visitor: restored.visitor };
     } catch {
       // Stored token is invalid/expired — fall through to creating a fresh session.
     }
   }
 
   const created = await visitorService.createSession();
-  return created.visitorToken;
+  return { visitorToken: created.visitorToken, visitor: created.visitor };
 }
 
 export default function useChatWidget(settings) {
@@ -58,7 +43,9 @@ export default function useChatWidget(settings) {
   const [conversation, setConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isRemoteTyping, setIsRemoteTyping] = useState(false);
+  const [typingSenderType, setTypingSenderType] = useState(null);
   const [isConversationClosed, setIsConversationClosed] = useState(false);
+  const [visitorProfile, setVisitorProfile] = useState(null);
 
   const isInitializedRef = useRef(false);
   const conversationIdRef = useRef(null);
@@ -66,6 +53,9 @@ export default function useChatWidget(settings) {
   const isTypingRef = useRef(false);
   const pendingOutboxRef = useRef([]);
   const settingsRef = useRef(settings);
+  const hasConnectedOnceRef = useRef(false);
+  const tokenRecoveryAttemptsRef = useRef(0);
+  const establishConnectionRef = useRef(null);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -134,13 +124,13 @@ export default function useChatWidget(settings) {
     [flushOutbox],
   );
 
-  const ensureConnected = useCallback(async () => {
-    if (isInitializedRef.current) return;
-    isInitializedRef.current = true;
-    setConnectionStatus(CONNECTION_STATUS.CONNECTING);
-
-    const visitorToken = await resolveVisitorToken();
+  // Split out from ensureConnected so the connect_error recovery path
+  // below can re-establish the connection directly, without
+  // ensureConnected's one-shot isInitializedRef guard blocking it.
+  const establishConnection = useCallback(async () => {
+    const { visitorToken, visitor } = await resolveVisitorSession();
     localStorage.setItem(VISITOR_TOKEN_STORAGE_KEY, visitorToken);
+    setVisitorProfile(visitor);
 
     // The visitor token rotates on every successful auth (Phase 5's sliding
     // expiration), so `auth` must be a callback re-read at connect time, not
@@ -152,12 +142,35 @@ export default function useChatWidget(settings) {
     });
 
     socket.on('connect', () => {
+      tokenRecoveryAttemptsRef.current = 0;
+      hasConnectedOnceRef.current = true;
       setConnectionStatus(CONNECTION_STATUS.CONNECTED);
       joinConversation(socket);
     });
 
     socket.on('disconnect', () => {
-      setConnectionStatus(CONNECTION_STATUS.DISCONNECTED);
+      // Distinguishes a genuine first connect (CONNECTING) from losing an
+      // already-established one (RECONNECTING) — previously both showed
+      // the same generic offline message.
+      setConnectionStatus(
+        hasConnectedOnceRef.current ? CONNECTION_STATUS.RECONNECTING : CONNECTION_STATUS.DISCONNECTED,
+      );
+    });
+
+    // The handshake was rejected outright (e.g. the visitor session was
+    // ended from another tab, or the stored token is stale in a way
+    // resolveVisitorSession's own pre-check didn't catch) — rather than
+    // let Socket.IO retry the same bad token forever, clear it and start a
+    // genuinely fresh session once. Capped at MAX_TOKEN_RECOVERY_ATTEMPTS
+    // so a real network outage doesn't spin in a reconnect loop.
+    socket.on('connect_error', () => {
+      if (tokenRecoveryAttemptsRef.current >= MAX_TOKEN_RECOVERY_ATTEMPTS) return;
+      tokenRecoveryAttemptsRef.current += 1;
+
+      setConnectionStatus(CONNECTION_STATUS.SESSION_EXPIRED);
+      localStorage.removeItem(VISITOR_TOKEN_STORAGE_KEY);
+      disconnectSocket();
+      establishConnectionRef.current();
     });
 
     socket.on(SOCKET_EVENTS.VISITOR_TOKEN_RENEWED, ({ visitorToken: renewed }) => {
@@ -179,18 +192,35 @@ export default function useChatWidget(settings) {
       }
     });
 
-    socket.on(SOCKET_EVENTS.CHAT_TYPING, () => setIsRemoteTyping(true));
-    socket.on(SOCKET_EVENTS.CHAT_STOP_TYPING, () => setIsRemoteTyping(false));
+    socket.on(SOCKET_EVENTS.CHAT_TYPING, ({ senderType } = {}) => {
+      setIsRemoteTyping(true);
+      setTypingSenderType(senderType ?? null);
+    });
+    socket.on(SOCKET_EVENTS.CHAT_STOP_TYPING, () => {
+      setIsRemoteTyping(false);
+      setTypingSenderType(null);
+    });
 
-    // Sprint 2 (Conversation Lifecycle Redesign) — previously the widget
-    // never listened for this at all, so a visitor had no idea an
-    // executive had ended the chat and could keep typing into nothing.
+    // Previously the widget never listened for this at all, so a visitor
+    // had no idea an executive had ended the chat and could keep typing
+    // into nothing.
     socket.on(SOCKET_EVENTS.CONVERSATION_CLOSED, ({ conversation: closedConversation }) => {
       if (closedConversation.conversationId !== conversationIdRef.current) return;
       setConversation(closedConversation);
       setIsConversationClosed(true);
     });
   }, [joinConversation, upsertMessage]);
+
+  useEffect(() => {
+    establishConnectionRef.current = establishConnection;
+  }, [establishConnection]);
+
+  const ensureConnected = useCallback(async () => {
+    if (isInitializedRef.current) return;
+    isInitializedRef.current = true;
+    setConnectionStatus(CONNECTION_STATUS.CONNECTING);
+    await establishConnection();
+  }, [establishConnection]);
 
   const open = useCallback(() => {
     setIsOpen(true);
@@ -258,6 +288,52 @@ export default function useChatWidget(settings) {
     socket.emit(SOCKET_EVENTS.CHAT_READ, { conversationId: conversationIdRef.current });
   }, []);
 
+  // "Fix visitor information collection."
+  const updateProfile = useCallback(async (updates) => {
+    const token = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
+    if (!token) return;
+
+    const result = await visitorService.updateMyProfile(token, updates);
+    setVisitorProfile(result.visitor);
+  }, []);
+
+  // "Add End Chat"/"Reset visitor session." Closes the conversation
+  // (which fire-and-forget generates its AI summary server-side), ends
+  // the visitor session, then resets the widget to a completely clean
+  // state so the next open starts genuinely fresh.
+  const endChat = useCallback(async () => {
+    const socket = getSocket();
+
+    if (socket?.connected && conversationIdRef.current) {
+      await new Promise((resolve) => {
+        socket.emit(SOCKET_EVENTS.CHAT_CLOSE, { conversationId: conversationIdRef.current }, () => resolve());
+      });
+    }
+
+    const token = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
+    if (token) {
+      await visitorService.endMySession(token).catch(() => {
+        // Best-effort — the widget resets locally regardless of whether
+        // the server-side session-end call succeeds.
+      });
+    }
+
+    disconnectSocket();
+    localStorage.removeItem(VISITOR_TOKEN_STORAGE_KEY);
+
+    isInitializedRef.current = false;
+    hasConnectedOnceRef.current = false;
+    tokenRecoveryAttemptsRef.current = 0;
+    conversationIdRef.current = null;
+
+    setConversation(null);
+    setMessages([]);
+    setIsConversationClosed(false);
+    setVisitorProfile(null);
+    setConnectionStatus(CONNECTION_STATUS.DISCONNECTED);
+    setIsOpen(false);
+  }, []);
+
   useEffect(() => {
     return () => {
       clearTimeout(typingTimeoutRef.current);
@@ -273,9 +349,13 @@ export default function useChatWidget(settings) {
     conversation,
     messages,
     isRemoteTyping,
+    typingSenderType,
     sendMessage,
     notifyTyping,
     markRead,
     isConversationClosed,
+    visitorProfile,
+    updateProfile,
+    endChat,
   };
 }

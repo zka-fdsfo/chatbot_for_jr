@@ -4,9 +4,12 @@ const { CONVERSATION_STATUS } = require('../constants/chat');
 
 // RESOLVED counts as "open" — a visitor reconnecting to a RESOLVED
 // conversation should resume it (and chatEvents.js reopens it to ACTIVE on
-// their next message), not start a brand-new one.
+// their next message), not start a brand-new one. ESCALATED is also open —
+// a visitor reconnecting while waiting for an executive resumes the same
+// escalated conversation rather than starting a fresh AI-only one.
 const OPEN_STATUSES = [
   CONVERSATION_STATUS.WAITING,
+  CONVERSATION_STATUS.ESCALATED,
   CONVERSATION_STATUS.ACTIVE,
   CONVERSATION_STATUS.RESOLVED,
 ];
@@ -25,11 +28,15 @@ class ConversationRepository extends BaseRepository {
   }
 
   // `scopeToUserId` (a non-admin caller's own user id) restricts results to
-  // conversations that are either unclaimed (WAITING — the shared queue
-  // every executive can see) or assigned to that caller. Combined with an
-  // explicit `status`/`assignedExecutiveId` filter via Mongo's implicit
-  // top-level AND, so e.g. `status: CLOSED` + scoping still only returns
-  // the caller's own closed conversations, never another executive's.
+  // conversations that are either unclaimed-but-escalated (ESCALATED with
+  // no assignedExecutiveId — the shared queue every executive can see once
+  // the AI has handed off, e.g. no round-robin executive was available) or
+  // assigned to that caller. A plain WAITING (still AI-only) conversation
+  // never matches either clause — not visible to a non-admin at all.
+  // Combined with an explicit `status`/`assignedExecutiveId` filter via
+  // Mongo's implicit top-level AND, so e.g. `status: CLOSED` + scoping
+  // still only returns the caller's own closed conversations, never
+  // another executive's.
   async search({ status, visitorId, assignedExecutiveId, scopeToUserId } = {}, options) {
     const filter = {};
 
@@ -37,7 +44,10 @@ class ConversationRepository extends BaseRepository {
     if (visitorId) filter.visitorId = visitorId;
     if (assignedExecutiveId) filter.assignedExecutiveId = assignedExecutiveId;
     if (scopeToUserId) {
-      filter.$or = [{ status: CONVERSATION_STATUS.WAITING }, { assignedExecutiveId: scopeToUserId }];
+      filter.$or = [
+        { status: CONVERSATION_STATUS.ESCALATED, assignedExecutiveId: null },
+        { assignedExecutiveId: scopeToUserId },
+      ];
     }
 
     return this.findAll(filter, options);

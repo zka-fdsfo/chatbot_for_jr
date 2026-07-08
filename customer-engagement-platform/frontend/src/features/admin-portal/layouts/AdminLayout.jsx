@@ -9,6 +9,7 @@ import { ROUTES } from '../../../constants/routes';
 
 const NAV_ITEMS = [
   { label: 'Dashboard', to: ROUTES.ADMIN_DASHBOARD },
+  { label: 'Conversations', to: ROUTES.ADMIN_CONVERSATIONS },
   { label: 'Knowledge Management', to: ROUTES.ADMIN_KNOWLEDGE },
   { label: 'Prompt Management', to: ROUTES.ADMIN_PROMPTS },
   { label: 'AI Settings', to: ROUTES.ADMIN_AI_SETTINGS },

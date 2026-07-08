@@ -6,8 +6,15 @@ import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
 import Avatar from '@mui/material/Avatar';
 import Chip from '@mui/material/Chip';
+import Button from '@mui/material/Button';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogActions from '@mui/material/DialogActions';
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
+import ExitToAppIcon from '@mui/icons-material/ExitToApp';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { ThemeProvider, createTheme, useTheme } from '@mui/material/styles';
 import ConversationArea from './ConversationArea';
@@ -40,17 +47,33 @@ function ChatWindow({
   connectionStatus,
   messages,
   isRemoteTyping,
+  typingSenderType,
   onClose,
   onSend,
   onTyping,
   isConversationClosed,
+  visitorProfile,
+  onUpdateProfile,
+  onEndChat,
 }) {
   const settings = useWidgetSettings();
   const { status: businessStatus, callbackSlots } = useBusinessStatus();
   const outerTheme = useTheme();
   const isMobile = useMediaQuery(outerTheme.breakpoints.down('sm'));
   const [draft, setDraft] = useState('');
+  const [isEndChatOpen, setIsEndChatOpen] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
   const isLeft = settings.position === 'BOTTOM_LEFT';
+
+  const handleConfirmEndChat = async () => {
+    setIsEnding(true);
+    try {
+      await onEndChat();
+    } finally {
+      setIsEnding(false);
+      setIsEndChatOpen(false);
+    }
+  };
 
   const widgetTheme = useMemo(
     () =>
@@ -113,6 +136,7 @@ function ChatWindow({
             py: 1.5,
             bgcolor: 'primary.main',
             color: 'primary.contrastText',
+            flexShrink: 0,
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -129,9 +153,21 @@ function ChatWindow({
               />
             )}
           </Box>
-          <IconButton size="small" onClick={onClose} aria-label="Close chat" sx={{ color: 'inherit' }}>
-            <CloseIcon fontSize="small" />
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            {!isConversationClosed && (
+              <IconButton
+                size="small"
+                onClick={() => setIsEndChatOpen(true)}
+                aria-label="End chat"
+                sx={{ color: 'inherit' }}
+              >
+                <ExitToAppIcon fontSize="small" />
+              </IconButton>
+            )}
+            <IconButton size="small" onClick={onClose} aria-label="Close chat" sx={{ color: 'inherit' }}>
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Box>
         </Box>
 
         <OfflineBanner status={connectionStatus} />
@@ -139,16 +175,19 @@ function ChatWindow({
         <ConversationArea
           messages={messages}
           isRemoteTyping={isRemoteTyping}
+          typingSenderType={typingSenderType}
           onSelectSuggestion={(question) => onSend(question, MESSAGE_TYPE.TEXT)}
           businessStatus={businessStatus}
           callbackSlots={callbackSlots}
+          visitorProfile={visitorProfile}
+          onUpdateProfile={onUpdateProfile}
         />
 
         {settings.featureToggles.quickRepliesEnabled && !isConversationClosed && (
           <QuickReplies onSelect={handleQuickReply} />
         )}
 
-        <Box sx={{ display: 'flex', gap: 1, p: 1.5, borderTop: 1, borderColor: 'divider' }}>
+        <Box sx={{ display: 'flex', gap: 1, p: 1.5, borderTop: 1, borderColor: 'divider', flexShrink: 0 }}>
           <TextField
             value={draft}
             onChange={(event) => {
@@ -173,6 +212,23 @@ function ChatWindow({
           </IconButton>
         </Box>
       </Paper>
+
+      <Dialog open={isEndChatOpen} onClose={() => setIsEndChatOpen(false)}>
+        <DialogTitle>End this chat?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This will end the conversation and clear your session. You can always start a new chat later.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsEndChatOpen(false)} disabled={isEnding}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirmEndChat} color="error" disabled={isEnding}>
+            End Chat
+          </Button>
+        </DialogActions>
+      </Dialog>
     </ThemeProvider>
   );
 }

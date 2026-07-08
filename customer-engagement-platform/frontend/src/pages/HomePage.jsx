@@ -1,15 +1,18 @@
-import Typography from '@mui/material/Typography';
-import Stack from '@mui/material/Stack';
+import { Navigate } from 'react-router-dom';
+import useAuth from '../hooks/useAuth';
+import { ROUTES } from '../constants/routes';
 
+// This app is the staff portal only (Executive + Admin) — the Chat
+// Widget lives in a separate bundle (widget.html) and is never mounted
+// here. There is nothing for an unauthenticated visitor to do at "/"
+// except sign in.
 function HomePage() {
-  return (
-    <Stack spacing={2}>
-      <Typography variant="h4">AI Customer Engagement Platform</Typography>
-      <Typography variant="body1" color="text.secondary">
-        Application shell is up and running. Feature pages will be added in later phases.
-      </Typography>
-    </Stack>
-  );
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) return null;
+  if (isAuthenticated) return <Navigate to={ROUTES.DASHBOARD} replace />;
+
+  return <Navigate to={ROUTES.LOGIN} replace />;
 }
 
 export default HomePage;

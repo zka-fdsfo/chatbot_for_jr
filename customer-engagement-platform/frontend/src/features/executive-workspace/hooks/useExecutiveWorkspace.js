@@ -4,7 +4,14 @@ import { SOCKET_EVENTS } from '../../../socket/socketEvents';
 import { getAccessToken } from '../../../services/apiClient';
 import conversationService from '../../../services/conversationService';
 import useNotification from '../../../hooks/useNotification';
+import playNotificationSound from '../../../utils/playNotificationSound';
 import { CONVERSATION_STATUS, TYPING_STOP_TIMEOUT_MS } from '../constants/executiveWorkspace';
+
+// A ticket landing on this executive specifically (manual reassignment)
+// is the "please respond" moment — a plain auto-dismissing toast is easy
+// to miss if they're not looking at the screen. This one plays a
+// distinct (lower-pitched) sound and stays on screen until dismissed.
+const ASSIGNMENT_NOTIFICATION_TYPES = new Set(['TICKET_ASSIGNED', 'TICKET_REASSIGNED']);
 
 export default function useExecutiveWorkspace(currentUserId) {
   const [isConnected, setIsConnected] = useState(false);
@@ -20,9 +27,38 @@ export default function useExecutiveWorkspace(currentUserId) {
   const isTypingRef = useRef(false);
 
   const refreshQueue = useCallback(async () => {
-    const result = await conversationService.list({ status: CONVERSATION_STATUS.WAITING, limit: 50 });
+    // ESCALATED, not WAITING — a plain WAITING conversation is still
+    // AI-only and not yet handed off; executives should never see it.
+    const result = await conversationService.list({ status: CONVERSATION_STATUS.ESCALATED, limit: 50 });
     setQueue(result.data.conversations);
   }, []);
+
+  const joinConversation = useCallback((conversationId) => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    socket.emit(SOCKET_EVENTS.CHAT_JOIN, { conversationId }, (ack) => {
+      if (!ack?.success) return;
+      activeConversationIdRef.current = ack.data.conversation.conversationId;
+      setActiveConversation(ack.data.conversation);
+      setMessages(ack.data.messages);
+    });
+  }, []);
+
+  // "If the employee refreshes the page, the system redirects them back
+  // to that same chat" — on every fresh connect, check for a conversation
+  // already locked to this executive (ACTIVE, assignedExecutiveId: me)
+  // and rejoin it automatically instead of leaving them looking at an
+  // empty workspace.
+  const resumeLockedConversation = useCallback(async () => {
+    const result = await conversationService.list({
+      mine: true,
+      status: CONVERSATION_STATUS.ACTIVE,
+      limit: 1,
+    });
+    const [locked] = result.data.conversations;
+    if (locked) joinConversation(locked.conversationId);
+  }, [joinConversation]);
 
   useEffect(() => {
     let isMounted = true;
@@ -35,6 +71,7 @@ export default function useExecutiveWorkspace(currentUserId) {
       if (!isMounted) return;
       setIsConnected(true);
       refreshQueue();
+      resumeLockedConversation();
     });
 
     socket.on('disconnect', () => {
@@ -95,13 +132,27 @@ export default function useExecutiveWorkspace(currentUserId) {
     socket.on(SOCKET_EVENTS.NOTIFICATION_NEW, (payload) => {
       if (!isMounted) return;
 
-      if (payload.type === 'NEW_CONVERSATION') {
+      if (payload.type === 'CONVERSATION_ESCALATED') {
+        // Fired on every escalation and every Transfer — "notify all
+        // employees in the dashboard." Always unassigned at this point:
+        // first to `chat:join` locks it, so every executive needs to see
+        // and be able to act on this, not just one pre-picked one.
+        const incoming = {
+          ...payload.conversation,
+          _highlight: payload.transferredFrom ? 'transferred' : 'escalated',
+        };
         setQueue((prev) =>
-          prev.some((item) => item.conversationId === payload.conversation.conversationId)
-            ? prev
-            : [payload.conversation, ...prev],
+          prev.some((item) => item.conversationId === incoming.conversationId)
+            ? prev.map((item) => (item.conversationId === incoming.conversationId ? incoming : item))
+            : [incoming, ...prev],
         );
-        notify('New visitor conversation waiting.', { severity: 'info' });
+        playNotificationSound({ frequency: 660 });
+        notify(
+          payload.transferredFrom
+            ? 'A conversation was transferred and needs a new executive.'
+            : 'A visitor needs a human — accept it from the queue.',
+          { severity: 'warning', autoHideDuration: null },
+        );
         return;
       }
 
@@ -135,7 +186,12 @@ export default function useExecutiveWorkspace(currentUserId) {
       };
 
       if (TICKET_MESSAGES[payload.type]) {
-        notify(TICKET_MESSAGES[payload.type], { severity: 'info' });
+        if (ASSIGNMENT_NOTIFICATION_TYPES.has(payload.type)) {
+          playNotificationSound({ frequency: 660 });
+          notify(TICKET_MESSAGES[payload.type], { severity: 'warning', autoHideDuration: null });
+        } else {
+          notify(TICKET_MESSAGES[payload.type], { severity: 'info' });
+        }
         return;
       }
 
@@ -163,17 +219,24 @@ export default function useExecutiveWorkspace(currentUserId) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const joinConversation = useCallback((conversationId) => {
-    const socket = getSocket();
-    if (!socket) return;
+  // "Ensure they cannot leave without closing it or transferring it" —
+  // the strongest signal a browser lets a page give on tab close/refresh
+  // is this native confirmation prompt; the actual "can't truly leave"
+  // guarantee comes from resumeLockedConversation() above always routing
+  // them straight back to the same chat if they do reload.
+  useEffect(() => {
+    const isLocked = activeConversation?.status === CONVERSATION_STATUS.ACTIVE;
 
-    socket.emit(SOCKET_EVENTS.CHAT_JOIN, { conversationId }, (ack) => {
-      if (!ack?.success) return;
-      activeConversationIdRef.current = ack.data.conversation.conversationId;
-      setActiveConversation(ack.data.conversation);
-      setMessages(ack.data.messages);
-    });
-  }, []);
+    const handleBeforeUnload = (event) => {
+      if (!isLocked) return;
+      event.preventDefault();
+      // Chrome requires returnValue to be set for the native prompt to show.
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [activeConversation]);
 
   const sendMessage = useCallback((text) => {
     const trimmed = (text ?? '').trim();
@@ -224,6 +287,28 @@ export default function useExecutiveWorkspace(currentUserId) {
     });
   }, [notify]);
 
+  // "If the employee is busy or wants to transfer the chat, they can
+  // click a 'Transfer' button." Unlike close, this clears local state
+  // immediately on success — the conversation no longer belongs to this
+  // executive at all, and the CONVERSATION_ESCALATED broadcast (§ above)
+  // is what tells every other executive it's now up for grabs again.
+  const transferConversation = useCallback(() => {
+    const socket = getSocket();
+    if (!socket || !activeConversationIdRef.current) return;
+
+    socket.emit(SOCKET_EVENTS.CHAT_TRANSFER, { conversationId: activeConversationIdRef.current }, (ack) => {
+      if (!ack?.success) {
+        notify(ack?.message ?? 'Failed to transfer the conversation.', { severity: 'error' });
+        return;
+      }
+
+      activeConversationIdRef.current = null;
+      setActiveConversation(null);
+      setMessages([]);
+      notify('Conversation transferred — waiting for another executive to accept it.', { severity: 'info' });
+    });
+  }, [notify]);
+
   return {
     isConnected,
     queue,
@@ -237,5 +322,6 @@ export default function useExecutiveWorkspace(currentUserId) {
     notifyTyping,
     markRead,
     closeConversation,
+    transferConversation,
   };
 }

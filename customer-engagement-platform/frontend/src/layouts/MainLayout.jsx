@@ -77,6 +77,11 @@ function MainLayout() {
               </ListItemButton>
             )}
             {isAuthenticated && (
+              <ListItemButton component={Link} to={ROUTES.CONVERSATION_HISTORY}>
+                <ListItemText primary="Conversation History" />
+              </ListItemButton>
+            )}
+            {isAuthenticated && (
               <ListItemButton component={Link} to={ROUTES.TICKETS}>
                 <ListItemText primary="Tickets" />
               </ListItemButton>

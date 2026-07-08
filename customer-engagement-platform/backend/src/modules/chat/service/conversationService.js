@@ -12,6 +12,8 @@ const analyticsEventService = require('../../analytics/service/analyticsEventSer
 const { EVENT_TYPE } = require('../../analytics/constants/analytics');
 const { getIO } = require('../../../socket/ioRegistry');
 const { SOCKET_EVENTS, EXECUTIVES_ROOM } = require('../../../socket/constants/socketEvents');
+const logger = require('../../../shared/logger/logger');
+const summaryService = require('../../ai/service/summaryService');
 
 // Same reused notification:new/executives-room mechanism as Tickets and
 // Leads, rather than the parallel snake_case event names sketched in
@@ -93,8 +95,20 @@ class ConversationService {
     return conversation;
   }
 
+  // "Once an employee accepts, the chat locks to them so no one else can
+  // handle it." An executive may only join/claim a conversation the AI
+  // has already handed off (ESCALATED, or later) — never a plain WAITING
+  // one still being handled by the AI. The first executive to call this
+  // on an unassigned ESCALATED conversation locks it atomically — the
+  // `assignedExecutiveId` check below rejects everyone else from that
+  // point on, whether they raced in via the same broadcast or opened it
+  // moments later.
   async joinAsExecutive(conversationId, executiveUserId) {
     const conversation = await this.getByConversationId(conversationId);
+
+    if (conversation.status === CONVERSATION_STATUS.WAITING) {
+      throw new AppError('This conversation has not been escalated to a human yet.', 403);
+    }
 
     if (
       conversation.assignedExecutiveId &&
@@ -103,11 +117,21 @@ class ConversationService {
       throw new AppError('This conversation is already assigned to another executive.', 403);
     }
 
-    if (!conversation.assignedExecutiveId) {
+    const wasUnassigned = !conversation.assignedExecutiveId;
+    if (wasUnassigned) {
       conversation.assignedExecutiveId = executiveUserId;
-      conversation.status = CONVERSATION_STATUS.ACTIVE;
-      await conversation.save();
+    }
 
+    const justJoined = conversation.status === CONVERSATION_STATUS.ESCALATED;
+    if (justJoined) {
+      conversation.status = CONVERSATION_STATUS.ACTIVE;
+    }
+
+    if (wasUnassigned || justJoined) {
+      await conversation.save();
+    }
+
+    if (wasUnassigned) {
       await this.recordAudit(conversation.id, CONVERSATION_AUDIT_ACTIONS.ASSIGNED, executiveUserId, {
         to: executiveUserId,
       });
@@ -117,11 +141,48 @@ class ConversationService {
         visitorId: conversation.visitorId,
         executiveUserId: String(executiveUserId),
       });
-
-      return { conversation, wasAssigned: true };
     }
 
-    return { conversation, wasAssigned: false };
+    return { conversation, wasAssigned: wasUnassigned, justJoined };
+  }
+
+  // "If the employee is busy or wants to transfer the chat, they can
+  // click a 'Transfer' button, notifying all active employees again."
+  // Unlocks the conversation (back to ESCALATED, unassigned) so any
+  // other executive can claim it exactly like a fresh escalation —
+  // chatEvents.js re-broadcasts the same notification a new escalation
+  // would and tells the visitor they're being handed to someone else.
+  async transfer(conversationId, executiveUserId) {
+    const conversation = await this.getByConversationId(conversationId);
+
+    if (String(conversation.assignedExecutiveId) !== String(executiveUserId)) {
+      throw new AppError('You can only transfer conversations assigned to you.', 403);
+    }
+
+    const allowedNext = VALID_STATUS_TRANSITIONS[conversation.status] ?? [];
+    if (!allowedNext.includes(CONVERSATION_STATUS.ESCALATED)) {
+      throw new AppError(`Cannot transfer a ${conversation.status} conversation.`, 400);
+    }
+
+    conversation.assignedExecutiveId = null;
+    conversation.status = CONVERSATION_STATUS.ESCALATED;
+    await conversation.save();
+
+    await this.recordAudit(conversation.id, CONVERSATION_AUDIT_ACTIONS.TRANSFERRED, executiveUserId, {
+      from: executiveUserId,
+    });
+
+    return conversation;
+  }
+
+  // "Until the AI is able to resolve the query, or the visitor asks for a
+  // human, an executive can't claim the chat." Moves a conversation out
+  // of AI-only handling (WAITING) into the shared, executive-visible
+  // state (ESCALATED) — called from chatEvents.js when the AI reply
+  // pipeline falls back, or the visitor's message matches
+  // humanRequestDetector.
+  async escalate(conversation, reason) {
+    return this._applyTransition(conversation, CONVERSATION_STATUS.ESCALATED, null, { trigger: reason });
   }
 
   async close(conversationId, executiveUserId) {
@@ -137,12 +198,47 @@ class ConversationService {
     });
   }
 
-  // Sprint 2 (Conversation Lifecycle Redesign) — "Executives may access
-  // only assigned conversations," but a conversation nobody has claimed
-  // yet (WAITING) is the shared queue every executive can see and act on.
+  // "Add End Chat" — a visitor has no User account/role, so it can't go
+  // through assertAccessible/updateStatus; ownership here is simply "this
+  // is your own conversation." Shares the same transition/broadcast logic
+  // as the staff path via _applyTransition, so a broadcast bug fixed once
+  // there can't reappear here from a second, separately written path.
+  async closeAsVisitor(conversationId, visitorId) {
+    const conversation = await this.getByConversationId(conversationId);
+
+    if (conversation.visitorId !== visitorId) {
+      throw new AppError('You can only end your own conversation.', 403);
+    }
+
+    // Attributed to the assigned executive if one exists; a visitor has no
+    // User account to record as `performedBy` (a required ref) otherwise —
+    // recordAudit is skipped entirely for an unclaimed (WAITING) chat.
+    const closed = await this._applyTransition(
+      conversation,
+      CONVERSATION_STATUS.CLOSED,
+      conversation.assignedExecutiveId,
+      { trigger: 'visitor_end_chat' },
+    );
+
+    // Fire-and-forget — the visitor never waits for it, and it must never
+    // fail their End Chat action (it will fail today with no
+    // GROQ_API_KEY configured, same graceful-failure pattern as every
+    // other AI-consuming feature in this project).
+    summaryService.generate(closed.conversationId).catch((error) => {
+      logger.warn(`Skipped end-of-chat summary for ${closed.conversationId}: ${error.message}`);
+    });
+
+    return closed;
+  }
+
+  // "Executives may access only assigned conversations," but a conversation
+  // that's been escalated and nobody has claimed yet (ESCALATED, no
+  // assignedExecutiveId) is the shared queue every executive can see and
+  // act on. A plain WAITING (still AI-only, not escalated) conversation is
+  // never visible to a non-admin at all.
   assertAccessible(conversation, user) {
     if (user.role === ROLES.ADMIN) return;
-    if (conversation.status === CONVERSATION_STATUS.WAITING) return;
+    if (conversation.status === CONVERSATION_STATUS.ESCALATED && !conversation.assignedExecutiveId) return;
 
     const isOwner =
       conversation.assignedExecutiveId &&
@@ -182,7 +278,14 @@ class ConversationService {
   async updateStatus(id, nextStatus, user) {
     const conversation = await this.getByIdOrThrow(id);
     this.assertAccessible(conversation, user);
+    return this._applyTransition(conversation, nextStatus, user.id);
+  }
 
+  // Shared transition logic — extracted so a visitor-initiated close
+  // (closeAsVisitor) can't independently forget the broadcast/analytics
+  // side effects a previously-caught bug (REST close silently not
+  // notifying the visitor) already had to fix once.
+  async _applyTransition(conversation, nextStatus, performedBy, extraDetails = {}) {
     const allowedNext = VALID_STATUS_TRANSITIONS[conversation.status] ?? [];
     if (!allowedNext.includes(nextStatus)) {
       throw new AppError(`Cannot transition a ${conversation.status} conversation to ${nextStatus}.`, 400);
@@ -193,19 +296,22 @@ class ConversationService {
     if (nextStatus === CONVERSATION_STATUS.CLOSED) conversation.endedAt = new Date();
     await conversation.save();
 
-    await this.recordAudit(conversation.id, CONVERSATION_AUDIT_ACTIONS.STATUS_CHANGED, user.id, {
-      from: previousStatus,
-      to: nextStatus,
-    });
+    if (performedBy) {
+      await this.recordAudit(conversation.id, CONVERSATION_AUDIT_ACTIONS.STATUS_CHANGED, performedBy, {
+        from: previousStatus,
+        to: nextStatus,
+        ...extraDetails,
+      });
+    }
 
     notifyExecutives({ type: 'CONVERSATION_STATUS_CHANGED', conversation, from: previousStatus, to: nextStatus });
 
     if (nextStatus === CONVERSATION_STATUS.CLOSED) {
-      // Sprint 2 bug caught during verification: this broadcast previously
-      // only fired from the socket-triggered chat:close handler, so a
-      // conversation closed via the REST endpoint never told the visitor's
-      // own client at all — centralizing it here means every path that
-      // reaches CLOSED (socket or REST) notifies the visitor the same way.
+      // This broadcast previously only fired from the socket-triggered
+      // chat:close handler, so a conversation closed via the REST endpoint
+      // never told the visitor's own client at all — centralizing it here
+      // means every path that reaches CLOSED (socket, REST, or visitor End
+      // Chat) notifies the visitor the same way.
       const io = getIO();
       if (io) {
         io.to(`conversation:${conversation.conversationId}`).emit(SOCKET_EVENTS.CONVERSATION_CLOSED, {
@@ -305,6 +411,7 @@ class ConversationService {
   async countActiveVisitors() {
     return conversationRepository.countDistinctVisitorsByStatuses([
       CONVERSATION_STATUS.ACTIVE,
+      CONVERSATION_STATUS.ESCALATED,
       CONVERSATION_STATUS.WAITING,
     ]);
   }

@@ -10,7 +10,14 @@ const executiveService = require('../../executive/service/executiveService');
 const { ROLES } = require('../../../shared/constants/roles');
 const { getIO } = require('../../../socket/ioRegistry');
 const { SOCKET_EVENTS, EXECUTIVES_ROOM } = require('../../../socket/constants/socketEvents');
-const { TICKET_STATUS, VALID_STATUS_TRANSITIONS, TICKET_AUDIT_ACTIONS } = require('../constants/ticket');
+const {
+  TICKET_STATUS,
+  TICKET_CATEGORIES,
+  TICKET_PRIORITY,
+  TICKET_SOURCE,
+  VALID_STATUS_TRANSITIONS,
+  TICKET_AUDIT_ACTIONS,
+} = require('../constants/ticket');
 const { NotFoundError, AppError } = require('../../../shared/errors');
 const analyticsEventService = require('../../analytics/service/analyticsEventService');
 const { EVENT_TYPE } = require('../../analytics/constants/analytics');
@@ -41,6 +48,56 @@ class TicketService {
     });
 
     await this.recordAudit(ticket.id, TICKET_AUDIT_ACTIONS.CREATED, createdByUserId, {
+      subject: ticket.subject,
+      source: ticket.source,
+    });
+
+    notifyExecutives({ type: 'TICKET_CREATED', ticket });
+
+    analyticsEventService.record(EVENT_TYPE.TICKET_CREATED, {
+      ticketId: ticket.id,
+      category: ticket.category,
+      priority: ticket.priority,
+    });
+
+    return ticket;
+  }
+
+  // "If AI cannot resolve, or the visitor asks for a human → notify all
+  // employees in the dashboard → whoever accepts locks the chat." Called
+  // from chatEvents.js's escalation orchestration. Reuses TICKET_SOURCE.AI
+  // (defined since Phase 12) and the same recordAudit/notifyExecutives
+  // helpers `create()` above already uses. Always created unassigned/OPEN
+  // — there's no auto-assignment; an executive claims it via the existing
+  // ticket `assign()` flow or, more commonly, by claiming the linked
+  // conversation directly (`chat:join`), which is the same underlying
+  // engagement.
+  async createFromAiEscalation({ conversation, visitor, triggeringMessage }) {
+    const existing = await ticketRepository.findOpenByConversationId(conversation.conversationId);
+    if (existing) return existing;
+
+    const subject = visitor?.name
+      ? `Support needed — ${visitor.name}`
+      : `Support needed — Visitor ${conversation.visitorId.slice(0, 8)}`;
+
+    const seq = await ticketCounterRepository.getNextSequence();
+    const ticketNumber = `TKT-${String(seq).padStart(6, '0')}`;
+
+    const ticket = await ticketRepository.create({
+      ticketNumber,
+      conversationId: conversation.conversationId,
+      visitorId: conversation.visitorId,
+      subject,
+      description: (triggeringMessage ?? '').slice(0, 1000),
+      category: TICKET_CATEGORIES.GENERAL,
+      priority: TICKET_PRIORITY.MEDIUM,
+      source: TICKET_SOURCE.AI,
+      createdBy: null,
+      assignedExecutiveId: null,
+      status: TICKET_STATUS.OPEN,
+    });
+
+    await this.recordAudit(ticket.id, TICKET_AUDIT_ACTIONS.CREATED, null, {
       subject: ticket.subject,
       source: ticket.source,
     });

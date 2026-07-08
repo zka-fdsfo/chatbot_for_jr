@@ -2,14 +2,17 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import useWidgetSettings from '../hooks/useWidgetSettings';
-import { CONNECTION_STATUS } from '../constants/chatWidget';
+import { CONNECTION_STATUS, CONNECTION_STATUS_MESSAGE } from '../constants/chatWidget';
 
 function OfflineBanner({ status }) {
   const settings = useWidgetSettings();
 
   if (status === CONNECTION_STATUS.CONNECTED) return null;
 
-  const message = status === CONNECTION_STATUS.CONNECTING ? 'Connecting…' : settings.offlineMessage;
+  const message =
+    status === CONNECTION_STATUS.DISCONNECTED
+      ? settings.offlineMessage
+      : CONNECTION_STATUS_MESSAGE[status] ?? settings.offlineMessage;
 
   return (
     <Box

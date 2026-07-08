@@ -10,6 +10,10 @@ class VisitorRepository extends BaseRepository {
     return this.model.findOne({ visitorId });
   }
 
+  async updateByVisitorId(visitorId, updates) {
+    return this.model.findOneAndUpdate({ visitorId }, updates, { new: true, runValidators: true });
+  }
+
   async countCreatedInRange({ from, to } = {}) {
     const filter = {};
     if (from || to) {

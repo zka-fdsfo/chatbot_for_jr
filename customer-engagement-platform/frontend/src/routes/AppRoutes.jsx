@@ -4,6 +4,7 @@ import ProtectedRoute from './ProtectedRoute';
 import HomePage from '../pages/HomePage';
 import LoginPage from '../pages/LoginPage';
 import ExecutiveWorkspacePage from '../pages/ExecutiveWorkspacePage';
+import ConversationHistoryPage from '../pages/ConversationHistoryPage';
 import TicketsPage from '../pages/TicketsPage';
 import TicketDetailPage from '../pages/TicketDetailPage';
 import LeadsPage from '../pages/LeadsPage';
@@ -11,6 +12,7 @@ import LeadDetailPage from '../pages/LeadDetailPage';
 import NotFoundPage from '../pages/NotFoundPage';
 import AdminLayout from '../features/admin-portal/layouts/AdminLayout';
 import AdminDashboardPage from '../pages/admin/AdminDashboardPage';
+import AdminConversationsPage from '../pages/admin/AdminConversationsPage';
 import KnowledgeManagementPage from '../pages/admin/KnowledgeManagementPage';
 import PromptManagementPage from '../pages/admin/PromptManagementPage';
 import AISettingsPage from '../pages/admin/AISettingsPage';
@@ -30,6 +32,7 @@ function AppRoutes() {
 
         <Route element={<ProtectedRoute />}>
           <Route path={ROUTES.DASHBOARD} element={<ExecutiveWorkspacePage />} />
+          <Route path={ROUTES.CONVERSATION_HISTORY} element={<ConversationHistoryPage />} />
           <Route path={ROUTES.TICKETS} element={<TicketsPage />} />
           <Route path={`${ROUTES.TICKETS}/:id`} element={<TicketDetailPage />} />
           <Route path={ROUTES.LEADS} element={<LeadsPage />} />
@@ -39,6 +42,7 @@ function AppRoutes() {
         <Route element={<ProtectedRoute allowedRoles={[ROLES.ADMIN]} />}>
           <Route element={<AdminLayout />}>
             <Route path={ROUTES.ADMIN_DASHBOARD} element={<AdminDashboardPage />} />
+            <Route path={ROUTES.ADMIN_CONVERSATIONS} element={<AdminConversationsPage />} />
             <Route path={ROUTES.ADMIN_KNOWLEDGE} element={<KnowledgeManagementPage />} />
             <Route path={ROUTES.ADMIN_PROMPTS} element={<PromptManagementPage />} />
             <Route path={ROUTES.ADMIN_AI_SETTINGS} element={<AISettingsPage />} />

@@ -6,8 +6,15 @@ import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 import IconButton from '@mui/material/IconButton';
 import Button from '@mui/material/Button';
+import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogActions from '@mui/material/DialogActions';
 import SendIcon from '@mui/icons-material/Send';
+import LockIcon from '@mui/icons-material/Lock';
 import { SENDER_TYPE, CONVERSATION_STATUS } from '../constants/executiveWorkspace';
 
 function MessageBubble({ message }) {
@@ -38,8 +45,9 @@ function MessageBubble({ message }) {
   );
 }
 
-function ActiveChatPanel({ conversation, messages, isRemoteTyping, onSend, onTyping, onMarkRead, onClose }) {
+function ActiveChatPanel({ conversation, messages, isRemoteTyping, onSend, onTyping, onMarkRead, onClose, onTransfer }) {
   const [draft, setDraft] = useState('');
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -64,6 +72,8 @@ function ActiveChatPanel({ conversation, messages, isRemoteTyping, onSend, onTyp
     conversation.status === CONVERSATION_STATUS.CLOSED ||
     conversation.status === CONVERSATION_STATUS.ARCHIVED;
 
+  const isActive = conversation.status === CONVERSATION_STATUS.ACTIVE;
+
   const handleSubmit = (event) => {
     event.preventDefault();
     if (isClosed) return;
@@ -71,19 +81,70 @@ function ActiveChatPanel({ conversation, messages, isRemoteTyping, onSend, onTyp
     setDraft('');
   };
 
+  const handleTransferConfirm = () => {
+    setTransferDialogOpen(false);
+    onTransfer(conversation.conversationId);
+  };
+
   return (
-    <Paper variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Paper
+      variant="outlined"
+      sx={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        ...(isActive && { borderColor: 'success.main', borderWidth: 2 }),
+      }}
+    >
       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.5 }}>
         <Box>
-          <Typography variant="subtitle1">{conversation.visitorId}</Typography>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <Typography variant="subtitle1">{conversation.visitorId}</Typography>
+            {isActive && (
+              <Chip
+                icon={<LockIcon fontSize="small" />}
+                label="Locked to you"
+                color="success"
+                size="small"
+                variant="outlined"
+              />
+            )}
+          </Stack>
           <Typography variant="caption" color="text.secondary">
             {conversation.status}
           </Typography>
         </Box>
-        <Button size="small" color="error" variant="outlined" disabled={isClosed} onClick={onClose}>
-          Close Conversation
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button
+            size="small"
+            color="warning"
+            variant="outlined"
+            disabled={isClosed || !isActive}
+            onClick={() => setTransferDialogOpen(true)}
+          >
+            Transfer
+          </Button>
+          <Button size="small" color="error" variant="outlined" disabled={isClosed} onClick={onClose}>
+            Close Conversation
+          </Button>
+        </Stack>
       </Stack>
+
+      <Dialog open={transferDialogOpen} onClose={() => setTransferDialogOpen(false)}>
+        <DialogTitle>Transfer this conversation?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This will unlock the chat and notify every available executive so someone else can pick it up. You
+            will lose access to it immediately.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTransferDialogOpen(false)}>Cancel</Button>
+          <Button color="warning" variant="contained" onClick={handleTransferConfirm}>
+            Transfer
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Divider />
 

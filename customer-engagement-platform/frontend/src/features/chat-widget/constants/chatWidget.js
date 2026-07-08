@@ -16,10 +16,19 @@ export const CONNECTION_STATUS = {
   CONNECTING: 'CONNECTING',
   CONNECTED: 'CONNECTED',
   DISCONNECTED: 'DISCONNECTED',
+  RECONNECTING: 'RECONNECTING',
+  SESSION_EXPIRED: 'SESSION_EXPIRED',
 };
 
-// Sprint 2 (Conversation Lifecycle Redesign) — the widget only needs to
-// know "has this conversation ended," not the full backend status enum.
+export const CONNECTION_STATUS_MESSAGE = {
+  [CONNECTION_STATUS.CONNECTING]: 'Connecting…',
+  [CONNECTION_STATUS.RECONNECTING]: "You're offline. Reconnecting…",
+  [CONNECTION_STATUS.SESSION_EXPIRED]: 'Session expired — starting a new one…',
+  [CONNECTION_STATUS.DISCONNECTED]: "You're offline.",
+};
+
+// The widget only needs to know "has this conversation ended," not the
+// full backend status enum.
 export const CLOSED_CONVERSATION_STATUSES = ['CLOSED', 'ARCHIVED'];
 
 export const CONVERSATION_ENDED_MESSAGE = 'This conversation has ended.';

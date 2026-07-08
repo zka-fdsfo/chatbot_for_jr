@@ -3,7 +3,7 @@ Project: AI Customer Engagement Platform
 
 Current Phase: Phase 17 – Production
 
-Last Updated: 2026-07-07 (Phase 16 complete)
+Last Updated: 2026-07-08 (Executive Handoff Redesign v2: broadcast-to-all-executives/first-to-claim locking, Transfer, refresh-redirect-to-locked-chat — supersedes the round-robin conversation reservation from the original Executive Handoff Redesign, below)
 
 ---
 
@@ -78,6 +78,347 @@ Explicitly out of scope this phase (per instruction — the roadmap's RAG
 items beyond these five, all explicitly "Future" in `RAG.md` itself):
 Re-ranking (§18), Query Expansion (§6), Intent Detection feeding the
 Retriever, and a true ML embedding model/provider.
+
+---
+
+Conversation Lifecycle Sprint — AI Reply, Auto-Escalation, Round-Robin (complete, 2026-07-08)
+
+Requested as "Sprint: Conversation Lifecycle" — a required lifecycle of
+Visitor Starts Chat → One Conversation → AI Handles/Replies → If AI
+cannot resolve → Support Ticket Created (round-robin, notified) →
+Executive Accepts Ticket → Executive Joins SAME Conversation → Closed →
+Archived.
+
+Inspected the actual implementation first, per instruction, rather than
+assuming it matched the docs. Most of the lifecycle already existed from
+the Improvement Sprint 1 "Conversation Lifecycle Redesign" work: a single
+conversation per visitor, ticket-conversation linkage without a ticket
+ever creating its own conversation, no message-visibility filtering by
+sender type anywhere, a real status lifecycle with a full audit trail,
+and admin-only archiving.
+
+**Found a genuine documentation/implementation mismatch**: `docs/
+API_SPEC.md` already described `GET /analytics/ai`'s `aiResponses` as
+driven by a `chatReplyService` wired into `chat:message`. No such file
+or wiring existed anywhere in the code — confirmed by grepping the whole
+backend for `aiEngine.generateResponse` and finding zero callers besides
+its own definition. `chat:message` only ever persisted and relayed
+visitor/executive messages; the AI never replied, despite what the docs
+claimed.
+
+Also found: no automatic escalation to a ticket when the AI can't
+resolve something, and no round-robin executive allocation — every
+`notification:new` was a blind broadcast to the whole `executives` room,
+and `TICKET_SOURCE.AI` (defined since Phase 12) had never actually been
+produced by anything.
+
+Built:
+- `backend/src/modules/ai/service/chatReplyService.js` (new) — reuses
+  the existing, unmodified `aiEngine.generateResponse`; triggered from
+  `chat:message` only while a conversation has no assigned executive.
+- `ticketService.createFromAiEscalation()` — auto-creates a `source: AI`
+  ticket linked to the conversation when the AI falls back, skipping
+  duplicates for an already-open escalation on that conversation, with a
+  subject built from the visitor's stated name when known
+  (`Support needed — <name>`).
+- `executiveService.pickNextForRoundRobin()` + new
+  `executive.lastAssignedAt` field — picks the least-recently-assigned
+  `ONLINE` executive with spare capacity (`currentChats < maxChats`);
+  that executive gets a targeted `notification:new` (`TICKET_ASSIGNED`)
+  via their tracked `socketId`, in addition to the existing room-wide
+  `TICKET_CREATED` broadcast.
+- `Ticket.createdBy`/`TicketAudit.performedBy` relaxed to nullable — a
+  system-created ticket has no human creator/performer; `TICKET_SOURCE.AI`
+  already anticipated this, the schema hadn't caught up.
+
+Verified live (Playwright): a visitor question got a correct,
+knowledge-backed AI reply, rendered correctly with no frontend changes.
+Verified directly against the real database (then fully cleaned up,
+restoring real executive state): an escalation creates an `ASSIGNED`
+ticket with the correct subject/source/audit trail and `performedBy:
+null`; a second escalation on the same conversation returns the existing
+ticket rather than duplicating it; two escalations for two different
+conversations were assigned to two different executives (rotation
+confirmed); an `ONLINE` executive already at capacity was correctly
+excluded.
+
+No changes to the AI Engine, Context Builder, Prompt Builder, Retriever,
+or Knowledge Service. See Architecture Decision 100 and
+`IMPROVEMENT_STATUS.md`'s "Sprint 1 Extension" section for full detail.
+
+---
+
+Cross-Cutting Bug-List Pass (complete, 2026-07-08)
+
+Reported informally as a 10-item bug list rather than a sprint
+reference, including "chat is not responding" again. Investigation (per
+instruction: check the actual current code, don't assume) found that an
+earlier, uncommitted pass of both Sprint 6 (Chat Widget UI/UX
+Improvements) and the AI Reply Pipeline fix had been lost from the
+working tree — reverted back to an older commit — before this pass
+began. `git status`/`git log` confirmed: the last real commit
+(`e7b7877`, "ai implementation") only touched two doc files; the
+Conversation Lifecycle Sprint's own code (`chatReplyService.js`, the
+round-robin/escalation work) survived only because it was done
+immediately before this pass and had not yet been discarded.
+
+Rebuilt, in order:
+
+1. Re-verified the AI reply pipeline was still live (it was — this
+   session's own Conversation Lifecycle Sprint work survived).
+2. Root-caused "can't fetch user information" to a real, long-standing
+   gap: `visitors.name`/`email`/`phone`/`company` had no write path
+   anywhere in the codebase at all (true since Phase 5, not a recent
+   break).
+3. Rebuilt Sprint 6 in full: `PATCH /visitors/sessions/me`,
+   `POST /visitors/sessions/end`, the visitor info form, visitor-
+   initiated `chat:close` (`WAITING -> CLOSED` added to the transition
+   map), the malformed-JSON-body 500 fix, message timestamps/auto-
+   linking, a labeled typing indicator, and a differentiated connection
+   banner. Caught one new bug this rebuild didn't have before: `endChat()`
+   cleared conversation/session state but never reset `isOpen`, leaving
+   an empty disconnected `ChatWindow` on screen instead of reverting to
+   the launcher.
+4. Split the frontend into two independent Vite bundles — the staff app
+   (`index.html`/`App.jsx`, Login/Executive/Admin only, chat widget never
+   mounted) and the embeddable widget (`widget.html`/`WidgetApp.jsx`).
+   Added `public/embed.js`, a vanilla-JS loader any external website
+   includes via one `<script>` tag. The first implementation attempt (a
+   full-viewport click-through iframe using internal `pointer-events:
+   none`) does not actually work — browsers treat an iframe as one
+   opaque hit-test target regardless of its own internal content,
+   confirmed by testing rather than assumed. Replaced with the standard
+   approach real chat widgets use: the widget posts its own `isOpen`/
+   `position` state to `window.parent`, and the loader resizes the
+   iframe to match the widget's actual footprint.
+5. Built `ConversationHistoryPage.jsx` (Executive: all of one's own
+   handled conversations, any status — reuses `GET /conversations?
+   mine=true`, already correctly scoped since Sprint 1) and
+   `AdminConversationsPage.jsx` (Admin: every conversation company-wide,
+   AI-only or executive-handled, with a "Find Leads" deep link into the
+   existing Leads Detect-from-Conversation dialog). Neither needed
+   backend changes.
+6. Visual review of every rebuilt/new surface caught one real
+   readability bug: `ConversationQueue.jsx` showed a visitor's full raw
+   UUID, wrapping onto two lines; shortened to match the convention used
+   everywhere else in this project.
+
+Explicitly scoped as known limitations rather than built this pass: full
+pagination on the new Admin Conversations page (capped at 100 results),
+a one-click "join this conversation" link from a ticket's detail page,
+and a full visual/branding redesign (this pass fixed concrete
+readability bugs found during review, not a design-system overhaul).
+
+See `IMPROVEMENT_STATUS.md`'s "Sprint 6 Progress" and "Cross-Cutting
+Bug-List Pass" sections for the full task-by-task breakdown, and
+Architecture Decision 101 below.
+
+---
+
+Executive Handoff Redesign (complete, 2026-07-08)
+
+Requested as a set of improvements on top of the already-working AI
+reply pipeline: a ticket (and therefore executive claimability) should
+never exist until the AI genuinely can't resolve the query, or the
+visitor explicitly asks for a human — until then, no executive should be
+able to see or claim the chat at all. With multiple executives, the
+escalation should round-robin-assign to one who's actually available,
+the chatbot should tell the visitor it's connecting them, the visitor
+should be told once an executive has actually joined (by name), there
+should be a real notification for the assigned executive, and — if
+nobody is available — the visitor should be told that too instead of
+silence.
+
+Also reported: the live chatbot was answering "I understand you'd like
+to speak with a live representative. I'll notify our support team...
+they'll reach out to you at [email] with a link to join a real-time
+conversation" — a real bug, not a request. The system prompt only said
+"offer to connect the visitor with a human"; nothing constrained *how*,
+so the model invented a plausible-sounding but entirely fictional
+email/link handoff procedure — this project's actual mechanism is an
+executive joining the *same* live chat, never email. A second, related
+gap: the AI's own free-text reply was the only signal ever checked for
+escalation (`usedFallback`, an empty completion) — a visitor typing "I
+want to talk to a human" got a friendly-sounding acknowledgment with no
+backend action behind it at all, since a non-empty, coherent completion
+never set `usedFallback`.
+
+Built:
+
+- New `CONVERSATION_STATUS.ESCALATED`, between `WAITING` (AI-only, not
+  yet handed off — invisible to every executive) and `ACTIVE` (an
+  executive has actually joined). `joinAsExecutive` now rejects joining a
+  plain `WAITING` conversation outright; `assertAccessible`/the
+  repository's `scopeToUserId` shared-queue clause both moved from
+  `WAITING` to `ESCALATED`.
+- `backend/src/modules/ai/service/humanRequestDetector.js` (new) — a
+  deterministic keyword/regex check for "talk to a human," "speak with
+  an agent," "connect me with someone," etc., run *before* ever calling
+  the LLM. When it matches, `chatReplyService` skips the real model call
+  entirely and returns a fixed acknowledgment (see the new `ESCALATION`
+  prompt below) — no hallucination risk, no wasted API cost, for a
+  signal already known deterministically.
+- The long-reserved-but-unused `ESCALATION` prompt type (Phase 11,
+  `DRAFT`/empty ever since — "Escalation Detection" was explicitly
+  deferred) finally has a real file default
+  (`prompts/templates/escalation.md`) and a `promptBuilder.getEscalationPrompt()`
+  accessor, mirroring exactly how `LEAD`'s own empty slot got filled in
+  Phase 13.
+- `system.md` gained one explicit rule: when offering to connect a
+  visitor with a human, only say a team member will join *this chat* —
+  never mention email, phone, or a link. Fixed in the file default *and*
+  in the live, already-`PUBLISHED` database override (Prompt Management
+  — an admin had never touched it, so the DB doc was identical seeded
+  content, but still took precedence over the file and needed its own
+  update via `promptService.update`/`publish` to actually take effect).
+- `conversationService.escalate()` (`WAITING -> ESCALATED`) and
+  `reserveForExecutive()` (sets `assignedExecutiveId` without changing
+  status — the conversation is round-robin-*reserved*, not yet actually
+  joined). `joinAsExecutive` now also transitions
+  `ESCALATED -> ACTIVE` when the already-reserved executive opens it, not
+  just when claiming a fresh, unassigned one.
+- `ticketService.createFromAiEscalation` no longer picks the round-robin
+  executive itself — the caller (`chatEvents.js`) picks once and passes
+  the same executive into both the ticket record and
+  `reserveForExecutive`, so a ticket and its conversation can never
+  disagree about who it went to. `executiveService.incrementChats` moved
+  from ticket-creation time to conversation-reservation time, so
+  `currentChats` counts active conversations once each, not once per
+  ticket *and* once per conversation for the same underlying engagement.
+- New `chatEvents.js` orchestration (`escalateConversation`): transitions
+  the conversation, creates the ticket, reserves it for whoever round
+  robin picked (or leaves it unassigned), and sends the visitor a real
+  `SYSTEM` message either way — "Connecting you with a member of our
+  team. They'll join this chat shortly." or "All of our team members are
+  currently busy. We'll connect you with someone as soon as they're
+  available." A second `SYSTEM` message ("`{name}` has joined the chat
+  and is now assisting you.") fires from `chat:join` once an executive
+  actually opens the conversation, whether they were just now assigned or
+  had already been reserved for it.
+- The old "NEW_CONVERSATION broadcast to every executive on every new
+  visitor session" was removed — it's no longer actionable (executives
+  can't claim a `WAITING` conversation at all) and was pure noise. It now
+  only fires when an escalation finds nobody available, so the shared
+  queue actually updates live for the case that needs it.
+- Frontend: the Conversation Queue now polls `status: ESCALATED`, not
+  `WAITING`. A ticket assignment notification (round-robin or manual
+  reassignment) now plays a distinct sound and stays on screen until
+  dismissed, instead of an easy-to-miss auto-hiding toast — a shared
+  `playNotificationSound` utility (extracted from the Chat Widget's
+  existing incoming-message sound) backs both.
+
+Verified end-to-end (Playwright + direct-DB, with cleanup/restoration
+after each): a normal question still gets a plain AI reply with no
+escalation; "I want to talk to a human" escalates immediately, reserves
+the conversation for a real, available executive, and shows the
+"connecting" message; the assigned executive sees it in their queue,
+joining transitions it to `ACTIVE` and shows the visitor the "has
+joined" message by name; with every executive's status temporarily
+flipped to `OFFLINE` (a reversible, DB-only change — no real socket
+session was touched), escalation correctly leaves the ticket/conversation
+unassigned and shows the "all busy" message instead.
+
+See `IMPROVEMENT_STATUS.md`'s "Executive Handoff Redesign" section for
+the full task-by-task breakdown, and Architecture Decision 102 below.
+
+---
+
+Executive Handoff Redesign v2 — Broadcast-and-Claim (complete, 2026-07-08)
+
+Requested immediately after the above sprint shipped: replace its
+round-robin conversation reservation with a plain broadcast-and-claim
+model — "if the AI cannot satisfy the client's request and the client
+types 'I want to talk to a human', notify all employees in the
+dashboard. Once an employee accepts, the chat locks to them so no one
+else can handle it. If the employee is busy or wants to transfer the
+chat, they can click a 'Transfer' button, notifying all active employees
+again. Whoever accepts locks the chat." Plus two new hard requirements
+that didn't exist before: a refresh of the executive's page must redirect
+them straight back to a chat still locked to them, and these events must
+be highlighted prominently in the dashboard so a lock/transfer can't be
+missed or accidentally abandoned.
+
+This is a strict simplification, not an addition — round-robin's
+capacity/fairness-aware picking is gone entirely; escalation now never
+selects an executive at all. The atomic "reject if already assigned to
+someone else" check `joinAsExecutive` already had for free (needed
+regardless, to stop two executives claiming the same chat) turned out to
+be the entire locking mechanism once the pre-assignment step was removed
+— first `chat:join` to arrive simply wins.
+
+Removed:
+
+- `executiveService.pickNextForRoundRobin()`, the `executive.lastAssignedAt`
+  field, and `conversationService.reserveForExecutive()` — all dead code
+  under the new model. Existing documents may still carry a stale
+  `lastAssignedAt` value; it's unused and harmless, not migrated.
+- `ticketService.createFromAiEscalation`'s `assignee` parameter — the
+  ticket is now always created `OPEN`/unassigned, with no conditional
+  `ASSIGNED` audit entry and no targeted `TICKET_ASSIGNED` socket emit to
+  an assignee's own `socketId` (there is no assignee at creation time).
+
+Built:
+
+- `ACTIVE -> ESCALATED` added to `VALID_STATUS_TRANSITIONS` (Transfer's
+  target transition) and a new `CONVERSATION_AUDIT_ACTIONS.TRANSFERRED`.
+- `conversationService.transfer(conversationId, executiveUserId)` —
+  verifies the caller is the assigned executive and the conversation is
+  currently transferable, clears `assignedExecutiveId`, moves
+  `ACTIVE -> ESCALATED`, and records a `TRANSFERRED` audit entry
+  (`details.from` is the transferring executive).
+- New `chat:transfer` socket event (`docs/SOCKET_EVENTS.md` §11):
+  decrements the transferring executive's `currentChats`, re-broadcasts
+  `notification:new` (`CONVERSATION_ESCALATED`, with `transferredFrom`
+  set) to the `executives` room exactly like a fresh escalation, and
+  sends the visitor a `SYSTEM` message ("You're being transferred to
+  another team member...").
+- `notification:new`'s escalation notification type renamed
+  `NEW_CONVERSATION` -> `CONVERSATION_ESCALATED` and simplified to always
+  fire on every escalation (not only when nobody qualified for
+  round-robin, since nobody is ever pre-picked now) — see
+  `chatEvents.js#escalateConversation`. A lightweight
+  `executiveService.countOnline()` (informational only, no side effects)
+  decides which visitor-facing wording to use ("Connecting you..." vs.
+  "All of our team members are currently busy...").
+- Frontend (`useExecutiveWorkspace.js`): a `resumeLockedConversation()`
+  call on every fresh socket `connect` — queries
+  `GET /conversations?mine=true&status=ACTIVE&limit=1` and auto-rejoins
+  it if found, which is what actually guarantees "refresh redirects them
+  back to that same chat." A `beforeunload` handler shows the browser's
+  native leave-confirmation prompt only while the executive holds an
+  `ACTIVE` conversation — a secondary, weaker deterrent than the
+  refresh-redirect, since a browser close/refresh can't be *prevented*,
+  only warned about. `transferConversation()` emits `chat:transfer` and
+  clears local active-conversation state immediately on a successful ack
+  (it doesn't wait for a broadcast echo, unlike `closeConversation`,
+  since transfer's originator isn't part of the same "am I still
+  assigned" derivation loop close relies on).
+- Frontend highlighting ("Highlight all these events clearly... prevent
+  accidental abandonment"): every `CONVERSATION_ESCALATED` notification
+  is now a persistent (`autoHideDuration: null`), sound-accompanied toast
+  regardless of transfer-vs-fresh-escalation, with distinct wording for
+  each. `ConversationQueue.jsx` tags incoming items with a client-side
+  `_highlight: 'escalated' | 'transferred'` flag and renders a colored
+  left border plus a "New"/"Transferred" chip. `ActiveChatPanel.jsx` shows
+  a "Locked to you" chip and a highlighted border while `ACTIVE`, and a
+  "Transfer" button (next to "Close Conversation," disabled unless
+  `ACTIVE`) that opens a confirmation dialog before unlocking the chat —
+  guarding against an accidental click abandoning a conversation
+  mid-conversation.
+
+Verified end-to-end (Playwright, two real executive sessions plus a
+visitor widget session — a temporary throwaway executive account was
+created for the second session and deleted afterward so the project
+owner's own live executive session was never touched): escalation
+broadcasts to both online executives with the queue item highlighted;
+the first executive to claim it sees "Locked to you," and the second
+executive's queue item disappears (already claimed) before they can
+double-claim it; Transfer clears the lock, re-broadcasts with the
+"Transferred" highlight, and the second executive can then claim it;
+refreshing the second executive's page after claiming redirects them
+straight back into the same locked conversation.
+
+See Architecture Decision 103 below.
 
 ---
 
@@ -964,6 +1305,98 @@ No frontend changes this phase — Phase 16's five task items (Embedding
 Service, Vector Store Integration, Retriever, Context Ranking, Hybrid
 Search) plus AI Engine integration are entirely internal to the backend;
 no new REST endpoints or UI surface were introduced.
+
+Backend (`backend/`) — Conversation Lifecycle Sprint (2026-07-08)
+```
+src/modules/ai/service/chatReplyService.js (new — generateReply(): builds
+  conversation history/summary/visitor context from existing services,
+  calls the existing aiEngine.generateResponse unmodified, falls back to
+  promptBuilder.getFallbackPrompt() on a provider error, persists via the
+  existing messageService.send as a SENDER_TYPE.AI message; returns
+  usedFallback so the caller knows whether to escalate)
+src/socket/events/chatEvents.js (chat:message's VISITOR-sender branch:
+  when the conversation has no assignedExecutiveId, fires
+  triggerAiReply() — chat:typing/chat:stop-typing with senderType: AI
+  around the call — and, on a fallback reply, calls
+  ticketService.createFromAiEscalation())
+src/modules/ticket/service/ticketService.js (createFromAiEscalation():
+  skips creating a duplicate via the new findOpenByConversationId,
+  round-robin-assigns via executiveService.pickNextForRoundRobin(),
+  records CREATED/ASSIGNED audit entries with performedBy: null, sends a
+  targeted notification:new to the assigned executive's own socketId in
+  addition to the existing room-wide broadcast)
+src/modules/ticket/model/ticketModel.js (createdBy: required -> nullable)
+src/modules/ticket/model/ticketAuditModel.js (performedBy: required -> nullable)
+src/modules/ticket/repository/ticketRepository.js (findOpenByConversationId)
+src/modules/executive/model/executiveModel.js (lastAssignedAt, new field)
+src/modules/executive/service/executiveService.js (pickNextForRoundRobin)
+```
+
+No new backend dependencies. Frontend: one line
+(`frontend/src/pages/TicketDetailPage.jsx`) — the audit trail's fallback
+label for a null `performedBy` changed from "Unknown" to "System (AI)".
+No changes to `aiEngine.js`, `contextBuilder.js`, `promptBuilder.js`,
+`retrieverService.js`, or `knowledgeService.js`.
+
+Backend (`backend/`) — Cross-Cutting Bug-List Pass (2026-07-08)
+```
+src/modules/visitor/validator/visitorValidator.js (new — updateProfileSchema)
+src/modules/visitor/repository/visitorRepository.js (updateByVisitorId)
+src/modules/visitor/repository/visitorSessionRepository.js (endSession)
+src/modules/visitor/service/visitorService.js (updateProfile, endSession)
+src/modules/visitor/controller/visitorController.js (updateMyProfile, endMySession)
+src/modules/visitor/routes/visitorRoutes.js (PATCH /sessions/me, POST /sessions/end)
+src/modules/chat/constants/chat.js (WAITING -> CLOSED)
+src/modules/chat/service/conversationService.js (closeAsVisitor,
+  _applyTransition extraction from updateStatus)
+src/socket/events/chatEvents.js (chat:close branches visitor vs. executive)
+src/middleware/errorHandler.js (malformed-JSON-body -> clean 400)
+```
+
+Frontend (`frontend/`) — Cross-Cutting Bug-List Pass (2026-07-08)
+```
+vite.config.js (multi-entry build: index.html + widget.html)
+widget.html (new — the embeddable widget's own HTML entry)
+src/widgetMain.jsx (new)
+src/WidgetApp.jsx (new — ThemeProvider + ChatWidget only, no router/auth)
+src/App.jsx (ChatWidget removed — staff app only)
+src/pages/HomePage.jsx (now redirects to /login or /dashboard)
+public/embed.js (new — third-party embed loader, iframe resize via postMessage)
+public/demo-embed.html (new — local test harness for "any external site")
+src/features/chat-widget/ChatWidget.jsx (posts isOpen/position to
+  window.parent when running inside an iframe)
+src/features/chat-widget/hooks/useChatWidget.js (rebuilt: visitorProfile,
+  updateProfile, endChat, typingSenderType, reconnect/connect_error
+  recovery)
+src/features/chat-widget/constants/chatWidget.js (CONNECTION_STATUS
+  additions, CLOSED_CONVERSATION_STATUSES)
+src/features/chat-widget/components/ChatWindow.jsx (End Chat button +
+  confirm dialog, flexShrink fixes)
+src/features/chat-widget/components/ConversationArea.jsx (renders
+  VisitorInfoForm, passes typingSenderType)
+src/features/chat-widget/components/VisitorInfoForm.jsx (new)
+src/features/chat-widget/components/MessageBubble.jsx (timestamps,
+  auto-linked URLs)
+src/features/chat-widget/components/TypingIndicator.jsx (senderType label)
+src/features/chat-widget/components/OfflineBanner.jsx (connection status messages)
+src/features/chat-widget/components/Launcher.jsx (reverted an
+  experimental pointer-events fix that turned out unnecessary)
+src/services/visitorService.js (updateMyProfile, endMySession)
+src/pages/ConversationHistoryPage.jsx (new — Executive)
+src/pages/admin/AdminConversationsPage.jsx (new — Admin)
+src/components/TranscriptBubble.jsx (new — shared read-only message bubble)
+src/pages/LeadsPage.jsx (reads location.state.conversationId to
+  pre-fill/open the Detect-from-Conversation dialog)
+src/constants/routes.js (CONVERSATION_HISTORY, ADMIN_CONVERSATIONS)
+src/routes/AppRoutes.jsx
+src/layouts/MainLayout.jsx (nav link)
+src/features/admin-portal/layouts/AdminLayout.jsx (nav link)
+src/features/executive-workspace/components/ConversationQueue.jsx
+  (shortened visitor label instead of a raw UUID)
+```
+
+No new dependencies (Vite's multi-entry `build.rollupOptions.input` and
+`postMessage` are both already-available platform/tooling features).
 
 ---
 
@@ -2045,6 +2478,98 @@ Architecture Decisions
     time into the `knowledge` module. `contextBuilder.js`'s own behavior is
     unchanged; it now imports the same logic from a shared location.
 
+100. **(Conversation Lifecycle Sprint) `chatReplyService` lives in the
+     `ai` module and reuses `aiEngine.generateResponse` completely
+     unmodified; round robin is "least-recently-assigned `ONLINE`
+     executive with spare capacity," not a rotating-index counter;
+     `Ticket.createdBy`/`TicketAudit.performedBy` were relaxed to
+     nullable rather than inventing a placeholder system user.** The
+     root cause here was a missing *caller*, not a broken pipeline — the
+     Context Builder/Retriever/Prompt Builder/AI Provider chain (Phases 7
+     and 16) already worked, proven by `summaryService`/`leadAiService`
+     already using the same provider successfully; this was verified by
+     inspection before writing any code, per instruction, and directly
+     contradicted what `API_SPEC.md` claimed at the time. Round robin
+     sorts `ONLINE`, under-capacity executives by `lastAssignedAt`
+     ascending (`null` sorts first) rather than maintaining a separate
+     rotating index that would drift out of sync as the online-executive
+     set changes — a never-assigned or longest-idle executive is simply
+     next. `Ticket.createdBy`/`TicketAudit.performedBy` being `required:
+     true` blocked a `source: AI` ticket outright even though that source
+     value has existed since Phase 12 specifically for this case;
+     relaxing both to nullable was the minimal fix, more honest than
+     fabricating a "system" user account that doesn't otherwise exist in
+     this project. The AI only escalates once per conversation
+     (`findOpenByConversationId`) so a still-open ticket isn't duplicated
+     every time the AI falls back again in the same conversation. No
+     existing service, repository, or frontend file needed to change
+     beyond one label in `TicketDetailPage.jsx`.
+
+101. **(Cross-Cutting Bug-List Pass) The embeddable widget resizes its
+     iframe to match its own footprint via `postMessage`, rather than
+     using a full-viewport iframe with internal `pointer-events: none`.**
+     The click-through-iframe approach was tried first and does not
+     work: confirmed by testing (not assumed) that browsers treat an
+     iframe as one opaque hit-test target from the parent page's point
+     of view, regardless of what's transparent inside the iframe's own
+     document — a click on the host page's own content anywhere within
+     the iframe's rectangle is swallowed by the iframe unconditionally,
+     including over the widget itself. Replaced with the same technique
+     real chat-widget products (Intercom, Crisp, Zendesk) use: the widget
+     posts its own `isOpen`/`position` state to `window.parent`, and the
+     loader script (`public/embed.js`) resizes/repositions the iframe
+     element in response — small when closed (just the launcher's
+     footprint), the chat window's size when open, fullscreen on a
+     narrow/mobile viewport. Because the iframe's `src` is this
+     platform's own `/widget.html` regardless of which site embeds it,
+     every request the widget makes is same-origin from its own point of
+     view — no backend CORS changes were needed to support third-party
+     embedding.
+     **The staff app and the widget are two Vite build entries in one
+     project, not two separate projects/repos** — they already share
+     components, services, and constants; splitting the codebase itself
+     would have meant either duplicating that shared code or extracting
+     a separate shared package, disproportionate for what was actually
+     needed (two independent output bundles, not two independent
+     codebases).
+     **Both new conversation-visibility pages (Executive's Conversation
+     History, Admin's Conversations) needed zero backend changes** —
+     `GET /conversations` was already correctly scoped for both callers
+     (Sprint 1's `assertAccessible`/`scopeToUserId` for a non-admin;
+     unscoped entirely for an admin), confirming the "Admin can view all
+     conversations" backend capability flagged as UI-less in earlier
+     Known Issues entries was, in fact, already fully built.
+
+102. **(Executive Handoff Redesign) Escalation reserves the conversation
+     for a round-robin-picked executive at ticket-creation time, before
+     they've joined.** `assignedExecutiveId` is set and `currentChats`
+     incremented as soon as an `ONLINE`, under-capacity executive exists
+     — `joinAsExecutive` then only transitions the reservation to
+     `ACTIVE` rather than performing a fresh claim. This decision was
+     superseded one sprint later — see 103.
+
+103. **(Executive Handoff Redesign v2 — Broadcast-and-Claim) Reverted 102:
+     escalation never picks or reserves an executive; every `ONLINE`
+     executive is notified and whoever calls `chat:join` first locks it.**
+     The user's explicit instruction changed the requirement from
+     "auto-assign to an available executive" to "notify all employees;
+     whoever accepts locks the chat" — a deliberate simplification, not
+     an oversight in 102. No new locking primitive was needed:
+     `joinAsExecutive`'s existing already-assigned rejection (`403` if
+     `assignedExecutiveId` is set to someone else) already guaranteed
+     atomicity; removing the pre-assignment step was the entire change.
+     Transfer (new) reuses the same mechanism symmetrically — it just
+     unlocks a conversation back to the same unassigned/broadcastable
+     state a fresh escalation starts in, rather than being a distinct
+     "reassignment" concept. The refresh-redirect requirement
+     ("ensuring they cannot leave without closing it or transferring it")
+     is satisfied by having the frontend re-run the exact same
+     `chat:join` an executive would use to claim a chat, on every socket
+     reconnect, for whichever conversation is `ACTIVE` and assigned to
+     them — no separate "resume" endpoint or session-affinity mechanism
+     was built, since the ordinary claim path already returns the full
+     conversation + message history needed to resume it.
+
 ---
 
 Known Issues
@@ -2289,11 +2814,13 @@ Known Issues
   ticket, and lead created in Phases 8-13) appears in any Metrics/Reports
   endpoint. Only the live Dashboard (§5, current-state snapshots) is
   unaffected by this gap.
-- AI Analytics is mostly honest zeros/nulls — no live AI chat-reply
-  pipeline exists anywhere in the codebase (tracked since Phase 8), so
-  `aiResolutionRate`, `aiConfidence`, `failedResponses`, and
-  `fallbackResponses` all have no real data source to compute from; see
-  Architecture Decision 85.
+- AI Analytics: `aiResponses` is now real and non-zero — the Conversation
+  Lifecycle Sprint's AI reply pipeline (`chatReplyService`, wired into
+  `chat:message`) generates real `AI`-sender messages, which this metric
+  counts directly. `aiResolutionRate`, `aiConfidence`, `failedResponses`,
+  and `fallbackResponses` remain honest `null`s — none of those four have
+  a real data source to compute from even now; see Architecture
+  Decision 85, updated.
 - Executive Analytics' `averageResponseTimeSeconds` and `activeTime` are
   always `null` — no per-executive first-response-time tracking or
   active-time/session-duration tracking exists anywhere (presence only
@@ -2330,15 +2857,14 @@ Known Issues
 - No Re-ranking (`RAG.md` §18 — cross-encoder/LLM re-ranking/business
   rules), Query Expansion (§6), or Intent Detection feeding the
   Retriever — all explicitly "Future" in the source doc.
-- No live AI chat-reply pipeline exists anywhere (tracked since Phase 8),
-  so the new Retriever/Hybrid Search/Context Ranking pipeline is
-  currently only exercised by the two places `aiEngine.generateResponse`
-  is actually called today (on-demand conversation summaries and Lead
-  Detection/Qualification Summary) — not by a real, in-conversation AI
-  reply to a visitor. Verified directly via the Knowledge Service's
-  `retrieveForQuery()` and the Context Builder's `build()` in isolation,
-  not via an actual chat message producing an AI response, since no such
-  code path exists yet.
+- **Resolved** (see the Conversation Lifecycle Sprint session above,
+  2026-07-08): a live AI chat-reply pipeline now exists —
+  `chatReplyService.generateReply()` calls `aiEngine.generateResponse()`
+  (and therefore the Retriever/Hybrid Search/Context Ranking pipeline
+  built in this phase) from a real, in-conversation visitor message, not
+  just from the on-demand Conversation Summary/Lead Detection features.
+  Verified end-to-end via an actual chat message producing a real,
+  retrieved-knowledge-backed AI response.
 - Documents published before Phase 16 existed have no embeddings until
   `npm run reindex:knowledge` is run once, or until they're next
   edited/republished — `retrieveForQuery()`'s fallback to category/

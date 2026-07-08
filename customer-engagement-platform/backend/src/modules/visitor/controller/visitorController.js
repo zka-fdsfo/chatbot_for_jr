@@ -23,6 +23,16 @@ const me = catchAsync(async (req, res) => {
   });
 });
 
+const updateMyProfile = catchAsync(async (req, res) => {
+  const visitor = await visitorService.updateProfile(req.visitor.visitorId, req.body);
+  return sendSuccess(res, { message: 'Visitor profile updated.', data: { visitor } });
+});
+
+const endMySession = catchAsync(async (req, res) => {
+  const session = await visitorService.endSession(req.visitorSession.sessionId);
+  return sendSuccess(res, { message: 'Visitor session ended.', data: { session } });
+});
+
 const getByVisitorId = catchAsync(async (req, res) => {
   const visitor = await visitorService.getByVisitorId(req.params.visitorId);
 
@@ -45,4 +55,4 @@ const getConversationHistory = catchAsync(async (req, res) => {
   });
 });
 
-module.exports = { createSession, me, getByVisitorId, getConversationHistory };
+module.exports = { createSession, me, updateMyProfile, endMySession, getByVisitorId, getConversationHistory };

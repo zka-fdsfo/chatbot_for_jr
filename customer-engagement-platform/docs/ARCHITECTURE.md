@@ -641,3 +641,62 @@ Conversation history must remain the single source of truth.
 Executives always continue the existing conversation rather than creating a new one.
 
 Tickets are linked to conversations rather than replacing them.
+
+---
+
+# 20. Frontend Delivery Architecture
+
+Added post-implementation (Cross-Cutting Bug-List Pass) once the Chat
+Widget needed to be genuinely embeddable on a company's own website
+rather than always sharing an origin/deploy with the staff app.
+
+One frontend project, two independent Vite build entries — not two
+separate repositories or codebases:
+
+```
+index.html   -> src/main.jsx    -> App.jsx        (the staff app:
+                                                    Login, Executive
+                                                    Workspace, Admin
+                                                    Portal — no Chat
+                                                    Widget ever mounted)
+
+widget.html  -> src/widgetMain.jsx -> WidgetApp.jsx (the embeddable
+                                                     widget bundle:
+                                                     ChatWidget only —
+                                                     no router, no auth,
+                                                     no admin code)
+```
+
+Both entries share the same `src/services/`, `src/features/chat-widget/`,
+and other components — the split is at the build/bundle level, not the
+codebase level, per this document's own "Reuse existing services" rule.
+
+## Embedding on a third-party website
+
+`public/embed.js` is a small, dependency-free script any external site
+includes directly:
+
+```html
+<script src="https://YOUR_DOMAIN/embed.js"></script>
+```
+
+It creates an iframe pointed at this same origin's `/widget.html`,
+resized to match the widget's own current footprint — a small box around
+the launcher button while closed, the full chat window while open (or
+fullscreen on a narrow/mobile viewport) — rather than covering the whole
+host page. The widget posts its own `isOpen`/`position` state to
+`window.parent` via `postMessage`; the loader listens for that message
+and resizes/repositions the iframe accordingly.
+
+A full-viewport iframe with `pointer-events: none` set on its own
+document (attempting to make it "click-through" everywhere except where
+the widget draws something) does not work — browsers treat an iframe as
+one opaque hit-test target from the host page's point of view regardless
+of what is transparent inside it. The resize-based approach above is
+the same technique widely used by embeddable chat products.
+
+Because the iframe's `src` is always this platform's own domain, every
+request the widget makes (REST + Socket.io) is same-origin from the
+widget's point of view no matter which site embeds it — no CORS
+configuration is required on the backend to support third-party
+embedding.

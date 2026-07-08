@@ -4,6 +4,7 @@ import Typography from '@mui/material/Typography';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import SuggestedQuestions from './SuggestedQuestions';
+import VisitorInfoForm from './VisitorInfoForm';
 import useWidgetSettings from '../hooks/useWidgetSettings';
 
 const CLOSED_STATUSES = new Set(['CLOSED', 'HOLIDAY']);
@@ -19,7 +20,16 @@ function formatSlot(slot) {
   });
 }
 
-function ConversationArea({ messages, isRemoteTyping, onSelectSuggestion, businessStatus, callbackSlots }) {
+function ConversationArea({
+  messages,
+  isRemoteTyping,
+  typingSenderType,
+  onSelectSuggestion,
+  businessStatus,
+  callbackSlots,
+  visitorProfile,
+  onUpdateProfile,
+}) {
   const settings = useWidgetSettings();
   const bottomRef = useRef(null);
   const isClosed = businessStatus && CLOSED_STATUSES.has(businessStatus.status);
@@ -49,6 +59,8 @@ function ConversationArea({ messages, isRemoteTyping, onSelectSuggestion, busine
             </Box>
           )}
 
+          {visitorProfile && !visitorProfile.name && <VisitorInfoForm onSubmit={onUpdateProfile} />}
+
           <SuggestedQuestions onSelect={onSelectSuggestion} />
         </Box>
       )}
@@ -57,7 +69,9 @@ function ConversationArea({ messages, isRemoteTyping, onSelectSuggestion, busine
         <MessageBubble key={message._id ?? message.tempId} message={message} />
       ))}
 
-      {isRemoteTyping && settings.featureToggles.typingIndicatorEnabled && <TypingIndicator />}
+      {isRemoteTyping && settings.featureToggles.typingIndicatorEnabled && (
+        <TypingIndicator senderType={typingSenderType} />
+      )}
 
       <div ref={bottomRef} />
     </Box>

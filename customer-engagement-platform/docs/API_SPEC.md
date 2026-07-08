@@ -489,13 +489,17 @@ conversation in the system. That gap is now closed.
 
 ## GET /api/v1/conversations
 
-Query params: `status` (`WAITING`/`ACTIVE`/`RESOLVED`/`CLOSED`/`ARCHIVED`),
-`visitorId`, `mine` (boolean — filters to `assignedExecutiveId ===` the
-caller's own user id), `page`, `limit`. `?status=WAITING` is the
-Conversation Queue (unassigned conversations waiting for an executive to
-claim them via `chat:join` — see `docs/SOCKET_EVENTS.md` §4) — every
-executive sees the same shared queue regardless of scoping, since an
-unclaimed conversation belongs to no one yet.
+Query params: `status` (`WAITING`/`ESCALATED`/`ACTIVE`/`RESOLVED`/
+`CLOSED`/`ARCHIVED`), `visitorId`, `mine` (boolean — filters to
+`assignedExecutiveId ===` the caller's own user id), `page`, `limit`.
+`?status=ESCALATED` is the Conversation Queue (Executive Handoff
+Redesign — conversations the AI has handed off, waiting for an executive
+to claim/be assigned via `chat:join` — see `docs/SOCKET_EVENTS.md` §4).
+A non-admin caller only ever sees an `ESCALATED` conversation here if
+it's unassigned or assigned to them — `?status=WAITING` returns nothing
+for a non-admin at all, since a plain WAITING (AI-only) conversation
+hasn't been handed off yet and isn't visible to executives (see
+`assertAccessible`).
 
 Success `200` — `data.conversations` is an array; `meta` is
 `{ total, page, limit }`.
@@ -529,12 +533,21 @@ notified the visitor's client at all, only the socket-triggered
 
 New in Sprint 2. Request body: `{ "status": "RESOLVED" }`. Validated
 against the same transition map as the model
-(`WAITING→ACTIVE`, `ACTIVE→RESOLVED|CLOSED`, `RESOLVED→ACTIVE|CLOSED`,
-`CLOSED→ARCHIVED`, `ARCHIVED→CLOSED`). Errors: `400` for an invalid
+(`WAITING→ESCALATED|CLOSED`, `ESCALATED→ACTIVE|CLOSED`,
+`ACTIVE→RESOLVED|CLOSED|ESCALATED`, `RESOLVED→ACTIVE|CLOSED`,
+`CLOSED→ARCHIVED`, `ARCHIVED→CLOSED`). `WAITING→CLOSED` was added in
+Sprint 6 for visitor-initiated End Chat on a never-claimed conversation;
+`ESCALATED` itself was added in the Executive Handoff Redesign, and
+`ACTIVE→ESCALATED` was added for Transfer (same redesign) — see
+`docs/DATABASE.md` §8. Errors: `400` for an invalid
 transition, `403` if the caller isn't the assigned executive (or Admin).
 Records a `STATUS_CHANGED` entry in the conversation's audit trail and
 notifies the `executives` room (`notification:new`, type
-`CONVERSATION_STATUS_CHANGED`).
+`CONVERSATION_STATUS_CHANGED`). Note: the dedicated `chat:transfer`
+socket event (`docs/SOCKET_EVENTS.md`) is the intended path for an
+executive-initiated transfer — it also decrements `currentChats` and
+re-broadcasts `CONVERSATION_ESCALATED` for the queue, neither of which
+this generic status-PATCH route does.
 
 ## PATCH /api/v1/conversations/:id/assign
 
@@ -892,6 +905,19 @@ Redesign) added a check that it references a real, existing conversation
 — errors `404` otherwise, instead of silently storing a dangling
 reference. Ticket creation never creates or mutates a conversation; it
 only ever references one that already exists.
+
+**Conversation Lifecycle Sprint:** a `source: "AI"` ticket can also be
+created automatically, without going through this endpoint at all —
+`ticketService.createFromAiEscalation()` is called internally from the
+`chat:message` socket handler when the AI reply pipeline falls back
+(couldn't answer) or the visitor asks for a human. It bypasses this
+route/validator entirely (it isn't an HTTP request), sets
+`createdBy: null` (no human creator), and — since the Executive Handoff
+Redesign — always creates the ticket `OPEN`/unassigned, exactly like a
+manually-created one. There is no assignee at creation time; an
+executive only becomes associated with the conversation once they win
+the first-to-claim race via `chat:join` (see §9 and
+`docs/SOCKET_EVENTS.md`).
 
 ## GET /api/v1/tickets
 
@@ -1482,17 +1508,22 @@ Availability`).
   created via `chat:join` over the socket, never via REST (§9's REST routes
   are read/close/summary only).
 - Department/skill/priority-based queue routing, and SLA/response-time
-  metrics (`EXECUTIVE_DASHBOARD.md` §8, §17) — any available executive can
-  claim any waiting conversation; there's no routing or metrics layer yet
+  metrics (`EXECUTIVE_DASHBOARD.md` §8, §17) — the Executive Handoff
+  Redesign's broadcast-and-claim allocation notifies every `ONLINE`
+  executive and lets whoever accepts first lock the chat; it is not
+  department/skill/priority-aware, and there's no metrics layer yet
   (that's Analytics, explicitly out of scope this phase).
 - Visitor-facing ticket creation/viewing — `TICKET_SYSTEM.md` §5 lists
   "Visitor Request" as a ticket source and §21 implies visitors can "view
   only their own tickets," but no visitor-facing ticket endpoint exists;
   a visitor's request is relayed into a ticket by staff (`source:
 VISITOR_REQUEST`), not self-served.
-- AI Ticket Creation (`TICKET_SYSTEM.md` §11 — the AI recommending and,
-  with visitor confirmation, creating a ticket) — no Escalation Detection
-  or AI-driven flow exists to trigger it from.
+- ~~AI Ticket Creation~~ (`TICKET_SYSTEM.md` §11) — **implemented**
+  (Executive Handoff Redesign): `ticketService.createFromAiEscalation`
+  auto-creates a `source: AI` ticket when the AI can't resolve a query or
+  the visitor asks for a human — no visitor confirmation step, since the
+  handoff happens directly in the same chat rather than needing a
+  separate accept/decline.
 - Ticket category/priority configuration (`ADMIN_PANEL.md` §13 —
   "Configure Categories," "Configure Priorities") — both are fixed enums
   (`TICKET_SYSTEM.md` §7-8), not admin-editable, same scope line as
@@ -1535,8 +1566,6 @@ Summary, Assignment, Follow-up, Conversion`), unlike Phase 12's Ticket
   in this project yet, so an admin pastes a hosted URL rather than
   uploading a file directly.
 - Password reset, MFA, OAuth/SSO (`AUTHENTICATION.md` §20 — future).
-- Explicit "end session" (no route sets `visitor_sessions.endedAt` yet —
-  sessions currently only become unusable by token expiry).
 - True semantic embeddings — Phase 16 built the full RAG pipeline
   (`knowledge_embeddings`, chunking, a Retriever, Hybrid Search, Context
   Ranking, AI Engine integration — see §18), but the embedding vectors
@@ -1553,10 +1582,11 @@ Summary, Assignment, Follow-up, Conversion`), unlike Phase 12's Ticket
   `GET /knowledge` REST endpoint (`KNOWLEDGE_BASE.md` §11's "Future
   implementation") — that endpoint is unchanged this phase; only the AI
   Engine's own internal retrieval path was upgraded (§18).
-- Intent Detection, Lead Detection, Escalation Detection, Confidence
-  Evaluation (see §8). Conversation Summary generation is now implemented
-  (§9's `/summary` routes) — the rest of AI Engine's originally-deferred
-  responsibilities are not.
+- Intent Detection and Confidence Evaluation (see §8) remain unbuilt.
+  Conversation Summary generation (§9's `/summary` routes), Lead
+  Detection (Phase 13), and Escalation Detection (Executive Handoff
+  Redesign — `humanRequestDetector` plus the AI-fallback signal, not a
+  full intent classifier) are all now implemented.
 - Charts (`ANALYTICS.md` §15 — Line/Bar/Pie/Trend visualizations) — the
   Admin Analytics page renders every metric above as plain numbers/tables,
   no charting library was added. The underlying data (e.g.

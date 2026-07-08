@@ -23,6 +23,7 @@ function ExecutiveWorkspacePage() {
     notifyTyping,
     markRead,
     closeConversation,
+    transferConversation,
   } = useExecutiveWorkspace(user?.id);
 
   return (
@@ -63,6 +64,7 @@ function ExecutiveWorkspacePage() {
           onTyping={notifyTyping}
           onMarkRead={markRead}
           onClose={closeConversation}
+          onTransfer={transferConversation}
         />
       </Box>
 

@@ -1,5 +1,6 @@
 const BaseRepository = require('../../../shared/database/baseRepository');
 const Ticket = require('../model/ticketModel');
+const { TICKET_STATUS } = require('../constants/ticket');
 
 class TicketRepository extends BaseRepository {
   constructor() {
@@ -8,6 +9,16 @@ class TicketRepository extends BaseRepository {
 
   async findByTicketNumber(ticketNumber) {
     return this.model.findOne({ ticketNumber });
+  }
+
+  // Conversation Lifecycle Sprint — avoids opening a second escalation
+  // ticket for the same conversation every time the AI falls back again.
+  async findOpenByConversationId(conversationId) {
+    return this.model.findOne({
+      conversationId,
+      isDeleted: false,
+      status: { $ne: TICKET_STATUS.CLOSED },
+    });
   }
 
   async search(

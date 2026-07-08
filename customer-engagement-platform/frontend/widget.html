@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat Widget</title>
+    <style>
+      /*
+        This page is only ever loaded inside the embed loader's iframe
+        (see public/embed.js), which resizes itself to exactly match the
+        widget's current footprint (launcher button, or the full chat
+        window) — so there's no "rest of the page" showing through this
+        document at all, and no click-through trick is needed here.
+      */
+      html, body, #root {
+        height: 100%;
+        margin: 0;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/widgetMain.jsx"></script>
+  </body>
+</html>

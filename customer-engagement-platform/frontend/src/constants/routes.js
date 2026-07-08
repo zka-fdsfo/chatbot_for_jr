@@ -10,6 +10,8 @@ export const ROUTES = {
   ADMIN_EXECUTIVES: '/admin/executives',
   ADMIN_BUSINESS_HOURS: '/admin/business-hours',
   ADMIN_ANALYTICS: '/admin/analytics',
+  ADMIN_CONVERSATIONS: '/admin/conversations',
   TICKETS: '/tickets',
   LEADS: '/leads',
+  CONVERSATION_HISTORY: '/conversations',
 };

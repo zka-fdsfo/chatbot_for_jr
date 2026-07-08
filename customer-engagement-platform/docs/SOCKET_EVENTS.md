@@ -72,25 +72,39 @@ Client → Server. Joins (or starts) a conversation.
 ```
 
 - **Visitor**, `conversationId` omitted: finds the visitor's open
-  conversation (`status` in `ACTIVE`/`WAITING`/`HANDOFF`) or creates a new
-  one (`status: WAITING` as of Phase 10 — see §11 Conversation Queue). This
-  is "Restore Previous Conversation" from `CHAT_WIDGET.md` §7 — a visitor
-  reconnecting resumes the same conversation rather than starting a new one
-  every time.
+  conversation (`status` in `ACTIVE`/`ESCALATED`/`WAITING`/`RESOLVED`) or
+  creates a new one (`status: WAITING` as of Phase 10 — see §12
+  Conversation Queue). This is "Restore Previous Conversation" from
+  `CHAT_WIDGET.md` §7 — a visitor reconnecting resumes the same
+  conversation rather than starting a new one every time.
 - **Visitor**, `conversationId` provided: joins only if
   `conversation.visitorId` matches the connected visitor — otherwise
   errors (see `chat:error`).
 - **Executive/Admin**: `conversationId` is required (staff must pick which
-  conversation to join). If the conversation is unassigned, joining
-  **claims** it (`assignedExecutiveId` is set, `status` becomes `ACTIVE`,
-  the executive's `currentChats` increments, an `ASSIGNED` entry is
-  recorded in the conversation's audit trail — Sprint 2, "Preserve
-  executive assignment history" — and `conversation:assigned` is
-  broadcast — see §11). If already assigned to a *different* executive, the
-  join is rejected (`403`-equivalent socket error) — per
-  `EXECUTIVE_DASHBOARD.md` §18, "Executives may access only assigned
-  conversations." Rejoining a conversation already assigned to the same
-  executive is a no-op (just re-joins the room).
+  conversation to join). **Executive Handoff Redesign:** the conversation
+  must already be `ESCALATED` (or later) — joining a plain `WAITING`
+  conversation is rejected outright (`403`-equivalent socket error, "This
+  conversation has not been escalated to a human yet"); the AI is still
+  handling it and no executive may claim it. An `ESCALATED` conversation
+  is never pre-assigned — escalation broadcasts to every `ONLINE`
+  executive (§5, §13) with no server-side picking, so **whichever
+  executive calls `chat:join` first locks it**: `assignedExecutiveId` is
+  set, `status` becomes `ACTIVE`, the executive's `currentChats`
+  increments, an `ASSIGNED` entry is recorded in the conversation's audit
+  trail, and `conversation:assigned` is broadcast — see §12. A `SYSTEM`
+  message ("`{name}` has joined the chat and is now assisting you.") is
+  persisted and broadcast to the conversation room — "once the executive
+  is assigned, mention the executive name is connected and available to
+  chat." If already assigned to a *different* executive (someone else won
+  the race, or already holds it after a previous claim), the join is
+  rejected (`403`-equivalent socket error) — per `EXECUTIVE_DASHBOARD.md`
+  §18, "Executives may access only assigned conversations." This
+  atomic already-assigned check is the *entire* locking mechanism — there
+  is no separate lock primitive. Rejoining a conversation already `ACTIVE`
+  for the same executive is a no-op (just re-joins the room, no second
+  join message) — this is also how "refresh redirects the executive back
+  to their locked chat" is implemented client-side (the workspace re-calls
+  `chat:join` for its own `ACTIVE` conversation on every reconnect).
 
 Supports an acknowledgement callback (`socket.emit('chat:join', payload, ack)`)
 in addition to the `chat:joined` broadcast below — use whichever fits the
@@ -153,15 +167,51 @@ dead conversation indefinitely. A visitor message arriving on a
 executive) — mirrors real support-desk behavior and gives `RESOLVED` a
 real exit path back to `ACTIVE` instead of being a dead end.
 
-Note: no AI response is generated yet. This phase persists and relays
-visitor/executive messages only — wiring `aiEngine.generateResponse` (built
-in Phase 7) into this flow was explicitly out of scope this phase; a
-visitor message currently gets no automatic reply.
+**Conversation Lifecycle Sprint / Executive Handoff Redesign:** a visitor
+message on a `WAITING` conversation (still AI-only, not yet escalated —
+the ordinary case for every new visitor) triggers a real AI reply. The
+server emits `chat:typing` (`senderType: "AI"`), calls
+`chatReplyService.generateReply()` (the existing Phase 7
+`aiEngine.generateResponse`, retrieving company knowledge via the Phase
+16 Retriever), persists the result as a `SENDER_TYPE.AI` message, and
+broadcasts it over this same `chat:message` event — then emits
+`chat:stop-typing` (`senderType: "AI"`). This is fire-and-forget relative
+to the visitor's own message: their `ack` returns immediately.
 
-A visitor message on a conversation that has an assigned executive also
-triggers a `notification:new` event (§12) targeted at that executive, in
-addition to the room broadcast above — so the executive finds out even if
-they aren't currently viewing that specific conversation.
+The conversation escalates (`WAITING -> ESCALATED`) when either:
+
+- the AI reply falls back (couldn't answer at all — an empty completion
+  or a provider error), or
+- the visitor's message matches `humanRequestDetector` — a deterministic
+  keyword check ("talk to a human", "speak with an agent", "connect me
+  with someone", etc.) run *before* ever calling the LLM. In this case
+  the AI's own reply is a fixed acknowledgment (the `ESCALATION` prompt
+  type, e.g. "Sure — connecting you with a member of our team now.") —
+  not a real model call, since there's nothing to answer.
+
+Either way, escalation creates a support ticket (`OPEN`, unassigned — see
+§12's `TICKET_CREATED` note) and broadcasts `notification:new`
+(`CONVERSATION_ESCALATED`, §12) to every socket in the `executives` room
+— it never pre-assigns an executive. A `SYSTEM` message is
+persisted/broadcast: "Connecting you with a member of our team. They'll
+join this chat shortly." if at least one executive is currently `ONLINE`
+(so a claim is possible), or "All of our team members are currently
+busy. We'll connect you with someone as soon as they're available." if
+none are online at all. Either way the conversation sits `ESCALATED`,
+unassigned, in the shared queue until some executive calls `chat:join`
+and wins the first-to-claim race (§4).
+
+A visitor message on a conversation that's `ESCALATED` or later, **with**
+an assigned executive, instead triggers a `notification:new` event (§12)
+targeted at that executive, in addition to the room broadcast above — so
+the executive finds out even if they aren't currently viewing that
+specific conversation (whether they've actually opened it yet or not). A
+visitor message on an `ESCALATED`-but-*unassigned* conversation (nobody
+was available at escalation time) gets no further AI reply and no
+notification — the AI has already tried and can't help further, and
+there's no executive to notify yet. The AI never replies once a
+conversation has left `WAITING` — matches `ARCHITECTURE.md`'s
+"Executives always continue the existing conversation" principle.
 
 ---
 
@@ -183,7 +233,14 @@ Server adds `senderType` when relaying:
 Not persisted — purely ephemeral relay, per `ARCHITECTURE.md` §12 (Socket
 is responsible for Typing as infrastructure, not stored state). The client
 is responsible for clearing its own typing indicator after a timeout
-(`CHAT_WIDGET.md` §13); the server does not auto-emit `chat:stop-typing`.
+(`CHAT_WIDGET.md` §13); the server does not auto-emit `chat:stop-typing`
+for a `VISITOR`/`EXECUTIVE` sender.
+
+**Conversation Lifecycle Sprint:** `senderType: "AI"` is now also a real
+value here — the server emits it itself (there is no AI "socket") around
+AI reply generation in §5, and unlike the visitor/executive case, the
+server also auto-emits the matching `chat:stop-typing` once generation
+finishes or fails.
 
 ---
 
@@ -239,30 +296,86 @@ old token is now invalid, exactly like the REST `GET /sessions/me` renewal.
 
 # 10. chat:close
 
-Client → Server. Executive-only — closes a conversation assigned to them.
+Client → Server. Either actor may close their own conversation — an
+executive closing one assigned to them, or (Sprint 6) a visitor ending
+their own chat ("End Chat"). Same event name for both; the server
+branches on which kind of socket sent it (`socket.data.user` vs.
+`socket.data.visitor`), rather than introducing a second, visitor-only
+event name for the same underlying action.
 
 ```json
 { "conversationId": "..." }
 ```
 
-Sets `status: CLOSED` and `endedAt`, decrements the executive's
-`currentChats`. Broadcasts `conversation:closed` (§11) to both the
+Sets `status: CLOSED` and `endedAt`. If the caller is an executive,
+decrements their `currentChats`. If the caller is the visitor
+(`closeAsVisitor`), the conversation must belong to them, and closing
+also fire-and-forget generates an AI conversation summary
+(`summaryService.generate`) — the visitor never waits on it, and a
+failure (e.g. no `GROQ_API_KEY` configured) is only logged, never
+surfaced to them. Broadcasts `conversation:closed` (§12) to both the
 conversation room and the shared executives room. Rejected (via the ack
-callback) if the caller isn't the assigned executive, or isn't an
-executive at all.
+callback) if an executive caller isn't the assigned executive, if a
+visitor caller doesn't own the conversation, or if the transition itself
+is invalid (e.g. an already-`CLOSED` conversation).
 
-**Sprint 2 fix:** the conversation-room broadcast is now emitted
-centrally from `conversationService.updateStatus` (whichever path reaches
-`CLOSED` — this socket event, or the REST `POST /conversations/:id/close`
-/ `PATCH /conversations/:id/status` endpoints, all go through the same
-method). Caught during this sprint's own verification: the REST close
-path previously never notified the visitor's client at all — only this
-socket event did — so a conversation closed via REST left the visitor's
-widget silently accepting (and losing) further input.
+**Fix, still true today:** the conversation-room broadcast is emitted
+centrally from `conversationService._applyTransition` (whichever path
+reaches `CLOSED` — this socket event from either actor, or the REST
+`POST /conversations/:id/close` / `PATCH /conversations/:id/status`
+endpoints, all go through the same method). Caught during verification:
+the REST close path previously never notified the visitor's client at
+all — only this socket event did — so a conversation closed via REST
+left the visitor's widget silently accepting (and losing) further
+input. Centralizing the broadcast here is also what let the later
+visitor-close path (`closeAsVisitor`) inherit the fix automatically
+instead of needing the same bug fixed a second time.
 
 ---
 
-# 11. Executive Presence and the Conversation Queue
+# 11. chat:transfer
+
+Client → Server. **Executive Handoff Redesign.** Executive-only — lets
+the executive currently holding an `ACTIVE` conversation hand it back to
+the shared queue instead of closing it, e.g. because they're busy or it
+needs a different team member.
+
+```json
+{ "conversationId": "..." }
+```
+
+Requires the caller to be the conversation's `assignedExecutiveId`
+(`403`-equivalent socket error otherwise, "You can only transfer
+conversations assigned to you.") and the conversation to currently allow
+an `ESCALATED` transition (`ACTIVE` only — `400`-equivalent error, "Cannot
+transfer a {status} conversation." for anything else, e.g. already
+`CLOSED`). On success:
+
+- `assignedExecutiveId` is cleared and `status` returns to `ESCALATED`
+  (`conversationService.transfer`).
+- A `TRANSFERRED` entry is recorded in the conversation's audit trail
+  (`details.from` is the transferring executive's user id).
+- The transferring executive's `currentChats` is decremented.
+- `notification:new` (`CONVERSATION_ESCALATED`, §13) is re-broadcast to
+  the `executives` room with an added `transferredFrom` field, exactly
+  like a fresh escalation — so every other `ONLINE` executive sees it
+  reappear in their queue and can claim it via `chat:join` (§4), first to
+  claim wins the lock, same as any other escalation.
+- A `SYSTEM` message ("You're being transferred to another team member.
+  Please hold — someone will join shortly.") is persisted and broadcast
+  to the conversation room, so the visitor isn't left wondering why their
+  executive went quiet.
+
+Supports an acknowledgement callback the same way `chat:join` does
+(`{ success: true, data: conversation }` or `{ success: false, message }`).
+The transferring executive's own client clears its local "active
+conversation" state immediately on a successful ack, rather than waiting
+for a broadcast echo — they no longer own the conversation at all once
+transfer succeeds.
+
+---
+
+# 12. Executive Presence and the Conversation Queue
 
 Added in Phase 10. Every authenticated Executive/Admin socket
 automatically joins a shared room, `executives`, on connection (visitors
@@ -313,7 +426,7 @@ Emitted when `chat:close` (§10) succeeds.
 
 ---
 
-# 12. notification:new (Server → a specific executive, or the `executives` room)
+# 13. notification:new (Server → a specific executive, or the `executives` room)
 
 Structured notifications, distinct from raw `chat:message`/`conversation:*`
 events, so a client can show a notification badge/toast without needing to
@@ -322,15 +435,26 @@ should not interrupt an active conversation — this is left to the client
 (e.g. suppress the toast if `conversationId` matches the one currently
 open).
 
-Two `type`s exist so far:
-
 ```json
-{ "type": "NEW_CONVERSATION", "conversation": { "...": "..." } }
+{ "type": "CONVERSATION_ESCALATED", "conversation": { "...": "..." } }
+{ "type": "CONVERSATION_ESCALATED", "conversation": { "...": "..." }, "transferredFrom": "executiveUserId" }
 ```
 
-Broadcast to the whole `executives` room whenever a visitor starts (or
-resumes) a conversation via `chat:join` with no `conversationId` — lets
-every connected executive's queue update live.
+**Executive Handoff Redesign renamed and repurposed this** (previously
+`NEW_CONVERSATION`, and previously fired for *any* visitor starting or
+resuming a conversation). It now fires in exactly two cases, both
+broadcast to the whole `executives` room since there is deliberately no
+server-side picking of a recipient — "notify all employees":
+
+- A fresh escalation (§5) — always, regardless of how many executives are
+  `ONLINE`, since the conversation is always created unassigned now.
+- A `chat:transfer` (§11) — with `transferredFrom` set to the transferring
+  executive's user id, so clients can distinguish "brand-new visitor
+  request" from "a colleague just gave this up" in their toast wording.
+
+Every connected executive's queue should treat this as "an escalated,
+unclaimed conversation is now waiting — first to `chat:join` locks it"
+and prepend it, highlighted, to their queue view.
 
 ```json
 { "type": "VISITOR_REPLY", "conversationId": "...", "executiveId": "...", "message": { "...": "..." } }
@@ -340,14 +464,16 @@ Broadcast to the whole `executives` room (not targeted to a single
 socket — Socket.io rooms don't have a built-in per-user filter without
 tracking socket IDs per user, and an executive may have multiple tabs
 open) whenever a visitor sends a message on a conversation that already
-has an assigned executive. Clients should compare `executiveId` against
-their own user id and ignore notifications meant for someone else.
+has an assigned executive (`ACTIVE`). Clients should compare
+`executiveId` against their own user id and ignore notifications meant
+for someone else.
 
-Not implemented: `AI_HANDOFF` and `ASSIGNMENT_CHANGES` notification types
-(`EXECUTIVE_DASHBOARD.md` §14) — there's no automatic AI handoff yet (no
-Escalation Detection, no AI Responses in `chat:message`), and assignment
-only ever changes via `chat:join`'s claim, which already has its own
-`conversation:assigned` event.
+`AI_HANDOFF` (`EXECUTIVE_DASHBOARD.md` §14) is implemented in spirit as
+the escalation flow described in §5 — there's no separate notification
+type by that exact name, since `TICKET_CREATED` (below) and
+`CONVERSATION_ESCALATED` (above) already cover it end to end.
+`ASSIGNMENT_CHANGES` is covered by `conversation:assigned` (§12) plus
+these same ticket notifications.
 
 Seven more `type`s were added in Phase 12 for Ticket System events
 (`TICKET_SYSTEM.md` §16), all broadcast to the whole `executives` room by
@@ -373,6 +499,22 @@ every connected executive (a new, likely-unassigned ticket). No new
 socket event name or room was introduced — this reuses `notification:new`
 and the `executives` room exactly as Phase 10 established, rather than
 adding per-domain socket events for every module going forward.
+
+**Conversation Lifecycle Sprint, superseded by the Executive Handoff
+Redesign:** when the AI can't resolve a visitor's question (or the
+visitor asks for a human), an escalation ticket (`source: AI`) is
+auto-created via `ticketService.createFromAiEscalation` — this reuses
+the plain `TICKET_CREATED` `type` string above, broadcast room-wide
+exactly as a manually-created ticket would be. The ticket is always
+`OPEN`/unassigned at creation now — there is no `TICKET_ASSIGNED` emit at
+escalation time, and no targeted per-executive `socketId` emit either,
+since there's no assignee yet to target (the original round-robin design
+had both; both were removed along with `createFromAiEscalation`'s
+assignee parameter). An executive only becomes associated with the
+underlying *conversation* (not the ticket) once they win the
+first-to-claim race via `chat:join` (§4). `TICKET_ASSIGNED` is still
+emitted, room-wide only (no targeted socket), by the separate manual
+reassignment path (`PATCH /api/v1/tickets/:id/assign`).
 
 Five more `type`s were added in Phase 13 for Lead Management events
 (`LEAD_MANAGEMENT.md` §17), same reused event/room, same
@@ -411,19 +553,25 @@ parallel, overlapping event vocabularies for the same concepts:
 
 ---
 
-# 13. Not Yet Implemented
+# 14. Not Yet Implemented
 
-- AI-generated responses within a conversation (see §5 note) — the AI
-  Engine (Phase 7) still has no caller in `chat:message`.
+- ~~AI-generated responses within a conversation~~ — **implemented**; see
+  §5's "Conversation Lifecycle Sprint" note.
 - "Seen by Executive" read-receipt granularity beyond the single `readAt`
   timestamp (`CHAT_WIDGET.md` §14's "Future support").
 - Department/skill/priority-based queue routing (`EXECUTIVE_DASHBOARD.md`
-  §8 lists these alongside Availability/Workload) — any available
-  executive can currently claim any waiting conversation; there's no
-  routing logic beyond "first to join wins."
+  §8 lists these alongside Availability/Workload) — the Executive Handoff
+  Redesign's broadcast-and-claim allocation (§4/§5/§13) notifies every
+  `ONLINE` executive equally and lets whoever accepts first lock the
+  chat; it is not department/skill/priority-aware, and there's no
+  capacity- or fairness-based picking either (that was the earlier,
+  superseded round-robin design).
 - `notification:new` targeted delivery to a single executive's socket(s)
-  specifically (currently broadcast to the whole `executives` room with a
-  client-side `executiveId` filter — see §12).
+  specifically — no longer implemented anywhere (the old round-robin
+  `TICKET_ASSIGNED` targeted emit was removed along with round-robin
+  itself); every notification type is broadcast to the whole `executives`
+  room, with a client-side `executiveId`/`assignedExecutiveId` filter
+  where relevant.
 - Real-time Admin Dashboard metrics (`ADMIN_PANEL.md` §21 lists "Dashboard
   Metrics" as a socket update) — Phase 11 built
   `GET /api/v1/admin/dashboard/metrics` (`API_SPEC.md` §13) as a
@@ -431,9 +579,9 @@ parallel, overlapping event vocabularies for the same concepts:
   `dashboard:metrics` (or similar) event exists.
 - AI Errors and Failed Jobs notifications to admins (`ADMIN_PANEL.md`
   §17) — no admin-facing error/notification channel exists; only
-  executive-facing `notification:new` (§12).
+  executive-facing `notification:new` (§13).
 
-# 14. Reconciled: "Additional Socket Events" (Sprint 2)
+# 15. Reconciled: "Additional Socket Events" (Sprint 2)
 
 `IMPROVEMENT_STATUS.md`'s Sprint 2 planning list sketched seven
 `snake_case` events "required to support the complete conversation

@@ -91,6 +91,30 @@ class VisitorService {
 
     return toSafeVisitor(visitor);
   }
+
+  // "Fix visitor information collection" — the only write path anywhere
+  // for a visitor's own name/email/phone/company; nothing else in this
+  // project ever populates them, which is why they always read as
+  // "Unknown"/"—" wherever they're displayed today.
+  async updateProfile(visitorId, updates) {
+    const visitor = await visitorRepository.updateByVisitorId(visitorId, updates);
+
+    if (!visitor) {
+      throw new NotFoundError('Visitor not found');
+    }
+
+    return toSafeVisitor(visitor);
+  }
+
+  async endSession(sessionId) {
+    const session = await visitorSessionRepository.endSession(sessionId);
+
+    if (!session) {
+      throw new NotFoundError('Visitor session not found');
+    }
+
+    return toSafeSession(session);
+  }
 }
 
 module.exports = new VisitorService();

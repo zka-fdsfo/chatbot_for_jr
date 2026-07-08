@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
@@ -37,13 +37,16 @@ const EMPTY_FORM = {
 
 function LeadsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [leads, setLeads] = useState([]);
   const [statusFilter, setStatusFilter] = useState('');
   const [scoreFilter, setScoreFilter] = useState('');
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
-  const [isDetectOpen, setIsDetectOpen] = useState(false);
-  const [detectConversationId, setDetectConversationId] = useState('');
+  // Arriving from Admin's "Find Leads" action on a specific conversation
+  // (Admin Conversations page) pre-fills and opens this dialog directly.
+  const [isDetectOpen, setIsDetectOpen] = useState(() => Boolean(location.state?.conversationId));
+  const [detectConversationId, setDetectConversationId] = useState(() => location.state?.conversationId ?? '');
   const [suggestion, setSuggestion] = useState(null);
   const [isDetecting, setIsDetecting] = useState(false);
   const { notify } = useNotification();

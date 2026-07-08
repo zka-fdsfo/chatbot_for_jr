@@ -194,7 +194,7 @@ function TicketDetailPage() {
               <ListItem key={entry._id} disableGutters>
                 <ListItemText
                   primary={entry.action}
-                  secondary={`${entry.performedBy?.name ?? 'Unknown'} · ${new Date(entry.createdAt).toLocaleString()}`}
+                  secondary={`${entry.performedBy?.name ?? 'System (AI)'} · ${new Date(entry.createdAt).toLocaleString()}`}
                 />
               </ListItem>
             ))}

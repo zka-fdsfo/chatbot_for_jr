@@ -223,17 +223,39 @@ Status — Sprint 2 replaced the original list. `HANDOFF` was removed (it
 was defined since Phase 8 but never once assigned anywhere in the
 codebase — a dead value, not a real state); `RESOLVED` is now a real,
 wired intermediate state instead of an unused one; `ARCHIVED` is new.
-Valid transitions are enforced in code
+`ESCALATED` is new too (Executive Handoff Redesign): a conversation is
+`WAITING` (AI-only) until the AI can't resolve the query, or the visitor
+explicitly asks for a human, at which point it moves to `ESCALATED` —
+the only status (besides already-assigned ones) an executive may ever
+join/claim. A plain `WAITING` conversation is never visible to an
+executive at all — `conversationService.assertAccessible`/`joinAsExecutive`
+both enforce this. Valid transitions are enforced in code
 (`chat/constants/chat.js#VALID_STATUS_TRANSITIONS`), the same pattern
 already used for Tickets and Leads:
 
 ```
-WAITING   -> ACTIVE
-ACTIVE    -> RESOLVED, CLOSED
-RESOLVED  -> ACTIVE (a visitor message auto-reopens it), CLOSED
-CLOSED    -> ARCHIVED
-ARCHIVED  -> CLOSED (restore)
+WAITING    -> ESCALATED, CLOSED (visitor End Chat on a never-claimed chat)
+ESCALATED  -> ACTIVE (an executive joins), CLOSED
+ACTIVE     -> RESOLVED, CLOSED, ESCALATED (an executive transfers)
+RESOLVED   -> ACTIVE (a visitor message auto-reopens it), CLOSED
+CLOSED     -> ARCHIVED
+ARCHIVED   -> CLOSED (restore)
 ```
+
+**Broadcast-and-claim allocation (Executive Handoff Redesign, superseding
+the original round-robin design)**: escalation never pre-assigns an
+executive. `assignedExecutiveId` stays `null` on an `ESCALATED`
+conversation, and every `ONLINE` executive is notified via the same
+`notification:new` broadcast (see `docs/SOCKET_EVENTS.md`). Whichever
+executive calls `chat:join` first gets the lock — enforced atomically by
+`conversationService.joinAsExecutive` rejecting the request with a 403 if
+`assignedExecutiveId` is already set to someone else — moving the
+conversation to `ACTIVE`. There is no server-side picking and no
+capacity- or rotation-based selection; "first to accept" is the only
+rule. An executive holding an `ACTIVE` conversation can call
+`conversationService.transfer` (`chat:transfer`) to unlock it back to
+`ESCALATED`/unassigned, which re-fires the exact same broadcast a fresh
+escalation would so any other `ONLINE` executive can claim it.
 
 Indexes
 
@@ -253,9 +275,13 @@ Purpose
 
 New in Sprint 2 — "Preserve executive assignment history." Immutable
 history of every conversation assignment/status change
-(`ASSIGNED`, `REASSIGNED`, `STATUS_CHANGED`, `ARCHIVED`, `RESTORED`),
-mirroring `ticket_audit_logs`'s exact pattern: the `chat` module only
-ever calls `create` on this collection, never `update`/`delete`.
+(`ASSIGNED`, `REASSIGNED`, `TRANSFERRED`, `STATUS_CHANGED`, `ARCHIVED`,
+`RESTORED`), mirroring `ticket_audit_logs`'s exact pattern: the `chat`
+module only ever calls `create` on this collection, never
+`update`/`delete`. `TRANSFERRED` is new (Executive Handoff Redesign) —
+recorded whenever an executive unlocks an `ACTIVE` conversation back to
+`ESCALATED` via `chat:transfer`, with `details.from` holding the
+transferring executive's user id.
 
 Fields
 
@@ -370,6 +396,16 @@ socketId
 lastSeen
 ```
 
+`currentChats`/`maxChats` are no longer consulted for allocation
+decisions (see `conversations` §8's broadcast-and-claim note) — they
+still track load for display/reporting and are incremented/decremented
+on `chat:join`/`transfer`/close. The `lastAssignedAt` field from the
+earlier round-robin design has been removed; it was written by
+`executiveService.pickNextForRoundRobin`, which no longer exists.
+Documents created before the Executive Handoff Redesign may still carry
+a stale `lastAssignedAt` value — it is unused and harmless, not
+migrated away.
+
 Status
 
 ```
@@ -430,10 +466,12 @@ source             — AI | EXECUTIVE | ADMINISTRATOR | VISITOR_REQUEST
                      (TICKET_SYSTEM.md §5 also lists "Future API
                      Integration" — not modeled, nothing produces it)
 
-createdBy          — ref users (whoever's REST call created it — always
-                     an authenticated Executive/Admin; there is no
-                     visitor-facing ticket-creation endpoint, see
-                     API_SPEC.md §15)
+createdBy          — ref users, nullable (whoever's REST call created it —
+                     an authenticated Executive/Admin for every
+                     human-initiated ticket, see API_SPEC.md §15; `null`
+                     for a `source: AI` ticket auto-created by the
+                     Conversation Lifecycle Sprint's escalation flow,
+                     which has no human creator)
 
 isDeleted, deletedAt — soft delete (TICKET_SYSTEM.md §13)
 ```
@@ -516,10 +554,18 @@ ticketId
 
 action
 
-performedBy — ref users
+performedBy — ref users, nullable
 
 details — Mixed (e.g. { from, to } for a status change or assignment)
 ```
+
+`performedBy` is `null` for a `CREATED` entry recorded by the Conversation
+Lifecycle Sprint's AI-escalation flow — there is no human performer for a
+system-initiated ticket. Since the Executive Handoff Redesign, tickets
+created from an AI escalation are always `OPEN`/unassigned at creation
+time (`ticketService.createFromAiEscalation` no longer takes an assignee
+parameter) — an executive only becomes associated with the underlying
+conversation once they claim it via `chat:join`, not the ticket.
 
 ## Ticket Counters (`ticket_counters`)
 
@@ -1048,12 +1094,18 @@ updatedBy
 
 Seeded lazily (`promptService.ensureDefaults()`, same lazy pattern as
 Executive/AI Settings/Widget Settings) the first time any prompt endpoint
-is hit: `SYSTEM`/`DEVELOPER`/`FALLBACK`/`SUMMARY` seed from their existing
-Phase 7/10 file templates and start `PUBLISHED` (identical content to
-what was already live via files — seeding changes nothing observable);
-`LEAD` and `ESCALATION` seed empty and `DRAFT` since neither has a
-current file or a runtime consumer (no Lead module — Phase 13; no
-Escalation Detection — deferred since Phase 7).
+is hit: `SYSTEM`/`DEVELOPER`/`FALLBACK`/`SUMMARY`/`LEAD`/`ESCALATION` all
+seed from a file template and start `PUBLISHED` (identical content to
+what was already live via files — seeding changes nothing observable).
+`LEAD` got its file default in Phase 13; `ESCALATION` got its own
+(`escalation.md` — the acknowledgment sent when a visitor is handed off
+to a human) in the Executive Handoff Redesign, once
+`humanRequestDetector`/`chatReplyService` existed as its actual runtime
+consumer. The already-existing empty/`DRAFT` `ESCALATION` document from
+Phase 11 needed no migration — `getPublishedContent` returns `null` for
+a non-`PUBLISHED` document regardless of its (empty) content, so
+`chatReplyService`'s `?? fileDefault` fallback already resolves to the
+new file correctly.
 
 `promptBuilder.build()` and `summaryService.generate()` check here first
 for a `PUBLISHED` document of the relevant type, falling back to the
@@ -1120,9 +1172,13 @@ construction, the same pattern already used for `ticket_audit_logs`.
 Event Types
 
 Only event types with a real, wireable trigger somewhere in the codebase
-exist — there is no `AI_RESPONSE`/`AI_HANDOFF`/`AI_FAILED` type, since
-nothing in this project currently generates a live AI chat reply (see
-Known Issues, tracked since Phase 8).
+exist — there is still no dedicated `AI_RESPONSE`/`AI_HANDOFF`/
+`AI_FAILED` event type. A live AI chat-reply pipeline now exists
+(`chatReplyService`, wired into `chat:message` — see the Conversation
+Lifecycle Sprint in `IMPLEMENTATION_STATUS.md`), but adding a dedicated
+event for it was judged unnecessary: `GET /analytics/ai`'s `aiResponses`
+metric already derives directly from counting `AI`-sender `messages`
+documents, so it reports real data with no new event type required.
 
 ```
 CONVERSATION_STARTED     — a new conversation is created for a visitor

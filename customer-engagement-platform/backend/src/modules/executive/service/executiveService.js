@@ -81,6 +81,18 @@ class ExecutiveService {
     return executiveRepository.incrementCurrentChats(userId, -1);
   }
 
+  // Executive Handoff Redesign — "notify all employees; whoever accepts
+  // locks the chat." Escalation no longer auto-assigns to one
+  // round-robin-picked executive; it broadcasts to every ONLINE
+  // executive and the first to `chat:join` claims it (enforced
+  // atomically by conversationService.joinAsExecutive's own
+  // already-assigned check). Used only to decide which visitor-facing
+  // message to show at escalation time (nobody online at all vs. someone
+  // is, so a claim is at least possible).
+  async countOnline() {
+    return executiveRepository.model.countDocuments({ status: EXECUTIVE_STATUS.ONLINE });
+  }
+
   // Below: admin-only Executive Management (ADMIN_PANEL.md §11) — distinct
   // from the self-service methods above (a logged-in executive managing
   // their own presence/status).

@@ -14,6 +14,7 @@ function loadTemplate(name) {
 const SYSTEM_PROMPT = loadTemplate('system.md');
 const DEVELOPER_PROMPT = loadTemplate('developer.md');
 const FALLBACK_PROMPT = loadTemplate('fallback.md');
+const ESCALATION_PROMPT = loadTemplate('escalation.md');
 
 // Prompt Management (Phase 11) lets an admin publish a replacement for
 // these without a redeploy. Each lookup falls back to the original
@@ -87,4 +88,13 @@ async function getFallbackPrompt() {
   return resolvePrompt(PROMPT_TYPES.FALLBACK, FALLBACK_PROMPT);
 }
 
-module.exports = { build, sanitizeMessage, FALLBACK_PROMPT, getFallbackPrompt };
+// The acknowledgment sent when a visitor is escalated to a human — either
+// because the AI couldn't resolve their question or they asked for one
+// directly (humanRequestDetector). ESCALATION was seeded DRAFT/empty
+// since Phase 11 pending this; now has a real file default like every
+// other prompt type here.
+async function getEscalationPrompt() {
+  return resolvePrompt(PROMPT_TYPES.ESCALATION, ESCALATION_PROMPT);
+}
+
+module.exports = { build, sanitizeMessage, FALLBACK_PROMPT, getFallbackPrompt, getEscalationPrompt };

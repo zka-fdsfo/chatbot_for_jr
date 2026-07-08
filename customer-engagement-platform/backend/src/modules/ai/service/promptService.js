@@ -11,18 +11,20 @@ function loadTemplate(name) {
 
 // Seed content for the prompt types that already have a file-based
 // equivalent from earlier phases (Phase 7's system/developer/fallback
-// prompts, Phase 10's summary prompt) — published immediately since it's
-// the exact content already live via files, so seeding it changes nothing
-// observable. LEAD and ESCALATION have no current file or consumer
-// (no Lead module yet — Phase 13; no Escalation Detection yet — Phase 7
-// explicitly deferred it), so they seed empty and DRAFT.
+// prompts, Phase 10's summary prompt, Phase 13's lead prompt). ESCALATION
+// now has one too (the human-handoff acknowledgment sent when a visitor
+// is escalated to an executive) — only affects fresh installs; the
+// already-existing empty/DRAFT ESCALATION document from Phase 11 needed
+// no migration, since chatReplyService's `getPublishedContent(...) ??
+// fileDefault` falls back to this same file for a DRAFT doc regardless
+// of its (empty) content, identical to how LEAD's Phase 13 fix worked.
 const SEED_CONTENT = {
   [PROMPT_TYPES.SYSTEM]: () => loadTemplate('system.md'),
   [PROMPT_TYPES.DEVELOPER]: () => loadTemplate('developer.md'),
   [PROMPT_TYPES.FALLBACK]: () => loadTemplate('fallback.md'),
   [PROMPT_TYPES.SUMMARY]: () => loadTemplate('summary.md'),
   [PROMPT_TYPES.LEAD]: () => loadTemplate('lead.md'),
-  [PROMPT_TYPES.ESCALATION]: () => '',
+  [PROMPT_TYPES.ESCALATION]: () => loadTemplate('escalation.md'),
 };
 
 class PromptService {

@@ -14,9 +14,12 @@ export const EXECUTIVE_STATUS = {
 };
 
 // Mirrors the backend's CONVERSATION_STATUS (chat/constants/chat.js) —
-// Sprint 2 removed the dead HANDOFF value and added ARCHIVED.
+// Sprint 2 removed the dead HANDOFF value and added ARCHIVED. ESCALATED
+// is new: the only status an executive may actually claim/join — a plain
+// WAITING conversation is still AI-only and not yet handed off.
 export const CONVERSATION_STATUS = {
   WAITING: 'WAITING',
+  ESCALATED: 'ESCALATED',
   ACTIVE: 'ACTIVE',
   RESOLVED: 'RESOLVED',
   CLOSED: 'CLOSED',

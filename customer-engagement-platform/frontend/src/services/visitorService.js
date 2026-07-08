@@ -12,6 +12,22 @@ async function getMySession(visitorToken) {
   return response.data;
 }
 
+async function updateMyProfile(visitorToken, updates) {
+  const response = await apiClient.patch('/visitors/sessions/me', updates, {
+    headers: { 'X-Visitor-Token': visitorToken },
+  });
+  return response.data;
+}
+
+// Sends `{}` rather than `null` — express.json()'s strict mode rejects a
+// bare `null` body outright even though it's technically valid JSON.
+async function endMySession(visitorToken) {
+  const response = await apiClient.post('/visitors/sessions/end', {}, {
+    headers: { 'X-Visitor-Token': visitorToken },
+  });
+  return response.data;
+}
+
 // Staff-facing (Executive/Admin) lookups — authenticated via the normal
 // Authorization header (apiClient's interceptor), never a visitor token.
 async function getByVisitorId(visitorId) {
@@ -24,4 +40,11 @@ async function getConversationHistory(visitorId, params = {}) {
   return response;
 }
 
-export default { createSession, getMySession, getByVisitorId, getConversationHistory };
+export default {
+  createSession,
+  getMySession,
+  updateMyProfile,
+  endMySession,
+  getByVisitorId,
+  getConversationHistory,
+};

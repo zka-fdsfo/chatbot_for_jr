@@ -18,6 +18,14 @@ class VisitorSessionRepository extends BaseRepository {
     );
   }
 
+  async endSession(sessionId) {
+    return this.model.findOneAndUpdate(
+      { sessionId },
+      { endedAt: new Date() },
+      { new: true },
+    );
+  }
+
   async countDistinctVisitorsInRange({ from, to } = {}) {
     const filter = {};
     if (from || to) {

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Some Other Company's Website (Embed Demo)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 3rem;
+        background: #fafafa;
+        color: #222;
+      }
+      h1 { margin-top: 0; }
+      .card {
+        max-width: 640px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Totally Unrelated Website</h1>
+      <p>
+        This page has nothing to do with the chat platform — it exists only to prove
+        the chat widget below was embedded via a single &lt;script&gt; tag, exactly like
+        it would be on any real third-party site.
+      </p>
+      <p>Click the chat bubble in the bottom-right corner to try it.</p>
+    </div>
+
+    <!-- The only integration a third-party site needs. -->
+    <script src="/embed.js"></script>
+  </body>
+</html>

@@ -23,10 +23,14 @@ function ChatWidgetInner() {
     connectionStatus,
     messages,
     isRemoteTyping,
+    typingSenderType,
     sendMessage,
     notifyTyping,
     markRead,
     isConversationClosed,
+    visitorProfile,
+    updateProfile,
+    endChat,
   } = useChatWidget(settings);
 
   useEffect(() => {
@@ -41,6 +45,20 @@ function ChatWidgetInner() {
     }
   }, [isOpen, messages, markRead]);
 
+  // When embedded via public/embed.js, this widget renders inside an
+  // iframe sized to match its own footprint (not the full page) — the
+  // loader script can't know that footprint on its own, so it resizes
+  // the iframe in response to this message. A no-op when the widget
+  // isn't inside an iframe at all (e.g. loading widget.html directly).
+  useEffect(() => {
+    if (window.self === window.top) return;
+
+    window.parent.postMessage(
+      { source: 'ai-cep-widget', type: 'WIDGET_STATE', isOpen, position: settings.position },
+      '*',
+    );
+  }, [isOpen, settings.position]);
+
   if (!isOpen) {
     return <Launcher onClick={open} position={settings.position} />;
   }
@@ -50,10 +68,14 @@ function ChatWidgetInner() {
       connectionStatus={connectionStatus}
       messages={messages}
       isRemoteTyping={isRemoteTyping}
+      typingSenderType={typingSenderType}
       onClose={close}
       onSend={sendMessage}
       onTyping={notifyTyping}
       isConversationClosed={isConversationClosed}
+      visitorProfile={visitorProfile}
+      onUpdateProfile={updateProfile}
+      onEndChat={endChat}
     />
   );
 }

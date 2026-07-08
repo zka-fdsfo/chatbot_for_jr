@@ -7,8 +7,11 @@ import UIProvider from './contexts/UIProvider';
 import NotificationProvider from './contexts/NotificationProvider';
 import AuthProvider from './contexts/AuthProvider';
 import AppRoutes from './routes/AppRoutes';
-import ChatWidget from './features/chat-widget/ChatWidget';
 
+// This is the staff app only (Login/Executive/Admin) — the Chat Widget
+// is a deliberately separate bundle (see widget.html/WidgetApp.jsx) so it
+// never renders on a staff page, and so it can be embedded into any other
+// website via public/embed.js without dragging this whole app along.
 function App() {
   return (
     <ErrorBoundary>
@@ -19,7 +22,6 @@ function App() {
             <NotificationProvider>
               <AuthProvider>
                 <AppRoutes />
-                <ChatWidget />
               </AuthProvider>
             </NotificationProvider>
           </UIProvider>
