@@ -154,7 +154,17 @@ Success `200`
 {
   "success": true,
   "message": "Current user.",
-  "data": { "user": { "id": "...", "name": "...", "email": "...", "role": "ADMIN", "status": "ACTIVE", "isActive": true, "lastLogin": "..." } }
+  "data": {
+    "user": {
+      "id": "...",
+      "name": "...",
+      "email": "...",
+      "role": "ADMIN",
+      "status": "ACTIVE",
+      "isActive": true,
+      "lastLogin": "..."
+    }
+  }
 }
 ```
 
@@ -172,7 +182,7 @@ For endpoints built in later phases:
 - `middleware/authenticate.js` — verifies the access token, re-fetches the
   user from the database (so a role/status change takes effect immediately,
   not just at next login), and attaches `req.user = { id, name, email,
-  role, status, isActive, lastLogin }`.
+role, status, isActive, lastLogin }`.
 - `middleware/authorize.js` — `requireRole(...roles)` and
   `requirePermission(permission)`, built on `shared/constants/roles.js` and
   `shared/constants/permissions.js` (the permission matrix from
@@ -250,12 +260,35 @@ Errors
   `POST /api/v1/visitors/sessions` and start a fresh session — there is no
   way to recover a session whose token is gone or invalid.
 
+## PATCH /api/v1/visitors/sessions/me
+
+New in Sprint 6 (Chat Widget/Visitor Session Improvements) — "Fix visitor
+information collection." Requires `X-Visitor-Token`. Request body: any
+subset of `{ "name": "...", "email": "...", "phone": "...", "company": "..." }`
+(at least one key). The visitor updating their own profile — distinct
+from the staff-facing lookup below, and from Lead capture (which infers
+these same fields from conversation text via AI, never a form).
+
+Success `200` — `data.visitor`, same shape as session creation.
+
+## POST /api/v1/visitors/sessions/end
+
+New in Sprint 6. Requires `X-Visitor-Token`. Sets `endedAt` on the
+session — the last step of the widget's End Chat flow
+(`docs/CHAT_WIDGET.md`'s End Chat spec, step 6: "Clear the current
+session"). Nothing set `endedAt` before this (a Known Issue since Phase
+5); `restoreSession` already correctly treats an ended session as
+invalid, so the very next `GET /sessions/me` with the same token
+correctly `401`s, forcing a genuinely fresh session.
+
+Success `200` — `data: null`.
+
 ## Visitor Middleware Reference
 
 - `middleware/visitorSession.js` — exports `requireVisitorSession` (401s if
   the token is missing/invalid/expired; used by `GET /sessions/me` above)
   and `attachVisitorSession` (same resolution, but sets `req.visitor =
-  null` instead of rejecting when there's no valid session — for routes that
+null` instead of rejecting when there's no valid session — for routes that
   behave differently for known vs. anonymous visitors without requiring
   one). Both attach `req.visitor`, `req.visitorSession`, and
   `req.visitorToken` on success. Neither does business logic itself — both
@@ -266,9 +299,10 @@ Errors
 
 Added in Phase 10 — staff-facing (Executive Workspace's Visitor Panel,
 `EXECUTIVE_DASHBOARD.md` §12). Requires `Authorization: Bearer <accessToken>`
-+ `VIEW_OWN_CONVERSATION` — a completely separate authentication path from
-the visitor-token routes above; this route never accepts `X-Visitor-Token`,
-and the visitor-token routes never accept an admin/executive access token.
+
+- `VIEW_OWN_CONVERSATION` — a completely separate authentication path from
+  the visitor-token routes above; this route never accepts `X-Visitor-Token`,
+  and the visitor-token routes never accept an admin/executive access token.
 
 Success `200` — same `visitor` shape as session creation. Errors: `404` if
 no such visitor.
@@ -395,11 +429,11 @@ contract.
   be overridden); `providers/groqProvider.js` — the Groq implementation,
   calling `https://api.groq.com/openai/v1/chat/completions` via the
   platform's native `fetch` (Node 18+, no new dependency); `providers/
-  providerManager.js` — `getProvider()` returns the provider selected by
+providerManager.js` — `getProvider()` returns the provider selected by
   `AI_PROVIDER` (currently only `"groq"`). Adding a second provider means
   adding one class + one registry entry — nothing else changes.
 - `prompts/promptBuilder.js` — `build({ knowledge, conversationSummary,
-  recentMessages, visitor, currentMessage })` assembles a chat-completions
+recentMessages, visitor, currentMessage })` assembles a chat-completions
   `messages` array in the order `PROMPT_ENGINEERING.md` §10 specifies
   (system+developer+knowledge → summary → recent messages → visitor context
   → current message). Templates live in `prompts/templates/*.md` as plain
@@ -407,18 +441,18 @@ contract.
   (control characters stripped, length-capped) before being placed in a
   message, per §9/§24.
 - `service/contextBuilder.js` — `build({ message, category, visitor,
-  conversationSummary, conversationHistory })` retrieves knowledge via
+conversationSummary, conversationHistory })` retrieves knowledge via
   `knowledgeService.search()` (category/keyword, `status: PUBLISHED` only —
   never queries MongoDB directly, per `AI_ENGINE.md` §7/§25), capped at
   `AI_KNOWLEDGE_LIMIT` documents.
 - `service/responseParser.js` — `parse(rawResponse)` returns `{ content,
-  isValid, isTruncated, finishReason, usage }`. `isValid` is a concrete,
+isValid, isTruncated, finishReason, usage }`. `isValid` is a concrete,
   checkable condition (non-empty content) — it does **not** attempt
   hallucination or fabricated-pricing detection (`AI_ENGINE.md` §12 lists
   these as validation goals, but implementing them as real checks needs
   more than this phase scoped; see `docs/IMPLEMENTATION_STATUS.md`).
 - `service/aiEngine.js` — `generateResponse({ message, category, visitor,
-  conversationSummary, conversationHistory })` orchestrates the above and
+conversationSummary, conversationHistory })` orchestrates the above and
   returns the parsed result, substituting the fallback template
   (`prompts/templates/fallback.md`) when the response is invalid.
 
@@ -598,7 +632,16 @@ Success `200`
   "success": true,
   "message": "Executive profile retrieved.",
   "data": {
-    "executive": { "userId": "...", "department": null, "skills": [], "status": "OFFLINE", "maxChats": 5, "currentChats": 0, "socketId": null, "lastSeen": null },
+    "executive": {
+      "userId": "...",
+      "department": null,
+      "skills": [],
+      "status": "OFFLINE",
+      "maxChats": 5,
+      "currentChats": 0,
+      "socketId": null,
+      "lastSeen": null
+    },
     "user": { "id": "...", "name": "...", "email": "...", "role": "EXECUTIVE" }
   }
 }
@@ -788,12 +831,11 @@ Success `200`
 
 `openTickets` (`ticketService.countOpen` — not `isDeleted` and not
 `CLOSED`) and `todaysLeads` (`leadService.countCreatedToday` — created
-since local midnight) were wired to real counts once the Ticket (Phase
-12) and Lead (Phase 13) modules existed to compute them; both were
+since local midnight) were wired to real counts once the Ticket (Phase 12) and Lead (Phase 13) modules existed to compute them; both were
 `null` in this doc before then. `aiResolutionRate` remains `null`, not
 `0` — there's no resolution-tracking concept anywhere (no signal exists
 for "the AI resolved this without a handoff"), so there's no data to be
-zero *of*; the frontend renders "N/A" for a `null` metric rather than a
+zero _of_; the frontend renders "N/A" for a `null` metric rather than a
 misleading real-looking number. `averageResponseTimeSeconds` is also
 `null` until at least one conversation has both a visitor message and a
 subsequent executive reply (`messageService.getAverageFirstResponseSeconds`,
@@ -960,7 +1002,7 @@ for every route. Authorization scoping is identical to Tickets
 
 AI Lead Detection (`LEAD_MANAGEMENT.md` §7, §10). Request body:
 `{ "conversationId": "..." }`. Analyzes the conversation transcript and
-returns a *suggestion* — nothing is persisted by this call; the
+returns a _suggestion_ — nothing is persisted by this call; the
 executive reviews it and calls `POST /leads` themselves to actually keep
 it (`LEAD_MANAGEMENT.md` §22: "Executives remain responsible for final
 qualification").
@@ -976,7 +1018,12 @@ Success `200`
       "isQualifiedLead": true,
       "leadScore": "HOT",
       "confidenceLevel": "HIGH",
-      "extractedInfo": { "name": "Jane Doe", "email": "jane@example.com", "phone": null, "company": "Acme Corp" },
+      "extractedInfo": {
+        "name": "Jane Doe",
+        "email": "jane@example.com",
+        "phone": null,
+        "company": "Acme Corp"
+      },
       "interestedServices": ["Consulting"],
       "reasoning": "Visitor requested pricing and shared contact details."
     }
@@ -1149,7 +1196,11 @@ Success `200` (slot-suggestion form)
   "data": {
     "availability": {
       "slots": [
-        { "date": "2026-07-06", "opensAt": "2026-07-05T23:00:00.000Z", "closesAt": "2026-07-06T07:30:00.000Z" }
+        {
+          "date": "2026-07-06",
+          "opensAt": "2026-07-05T23:00:00.000Z",
+          "closesAt": "2026-07-06T07:30:00.000Z"
+        }
       ]
     }
   }
@@ -1157,7 +1208,7 @@ Success `200` (slot-suggestion form)
 ```
 
 There is no visitor-facing "submit a callback request" endpoint — this
-is the *availability* check/suggestion only (matching this phase's
+is the _availability_ check/suggestion only (matching this phase's
 explicit scope, "Callback Availability," not "Callback Requests");
 submitting one would require a new visitor-facing write path into Lead
 or Ticket, which Phase 13 explicitly deferred (see its Known Issues).
@@ -1199,7 +1250,7 @@ Real-Time Updates (`ANALYTICS.md` §15-17) were not requested and are not
 built (see §19 below). "Reports" is not a separate concept from
 "Metrics" here — every domain endpoint below accepts the same
 `range`/`from`/`to` query params (`ANALYTICS.md` §14's Time-Based
-Reports), so date-range filtering *is* the Reports feature, layered on
+Reports), so date-range filtering _is_ the Reports feature, layered on
 top of each Metrics domain rather than duplicated as its own surface.
 
 All metrics endpoints require `authenticate` + `requirePermission(VIEW_
@@ -1259,13 +1310,16 @@ Success `200`
 ## GET /api/v1/analytics/ai
 
 `ANALYTICS.md` §7. Response `data.metrics`: `range`, `aiResponses`
-(real — a count of `AI`-sender messages, currently always 0 since no
-live AI chat-reply pipeline exists yet), `aiResolutionRate` (`null`, no
-resolution-tracking concept), `humanHandoffs` (real — every executive
-claim of a `WAITING` conversation currently counts, since there's no
-AI-first triage stage to hand off from), `aiConfidence` /
-`failedResponses` / `fallbackResponses` (all `null` — no data source
-exists anywhere for these), `averageResponseTimeSeconds`.
+(real — a count of `AI`-sender messages; the live AI reply pipeline —
+`chatReplyService`, wired into `chat:message` for any conversation not
+yet claimed by an executive — now generates these, so this is no longer
+always 0), `aiResolutionRate` (`null`, no resolution-tracking concept),
+`humanHandoffs` (real — every executive claim of a `WAITING`
+conversation currently counts, since there's no AI-first triage stage to
+hand off from), `aiConfidence` / `failedResponses` / `fallbackResponses`
+(all `null` — no data source exists anywhere for these; a provider
+failure falls back to a graceful message but isn't flagged/counted
+anywhere), `averageResponseTimeSeconds`.
 
 ## GET /api/v1/analytics/executives
 
@@ -1383,7 +1437,7 @@ Pipeline (all inside `backend/src/modules/knowledge/`):
   (Context Ranking, `RAG.md` §14 — Popularity and Business Priority are
   omitted, no data source exists for either).
 - **Integration** — `knowledgeService.retrieveForQuery(query, {category,
-  limit})` is the new single entry point the AI Engine's Context Builder
+limit})` is the new single entry point the AI Engine's Context Builder
   calls, replacing its previous direct `knowledgeService.search(...)`
   call; falls back to the original category/keyword search automatically
   if the knowledge base has no embeddings at all yet (e.g. a fresh
@@ -1403,8 +1457,8 @@ Documented in other files but not built yet — do not assume these exist:
 
 - Special Hours (`BUSINESS_HOURS.md` §9 — seasonal/event schedules
   distinct from holidays) — not in Phase 14's explicit scope (`Weekly
-  Schedule, Holidays, Availability Service, Timezone Support, Callback
-  Availability`).
+Schedule, Holidays, Availability Service, Timezone Support, Callback
+Availability`).
 - AI/Ticket/Lead integration with Business Hours (`BUSINESS_HOURS.md`
   §13, §15, §16 — the AI checking availability before escalating,
   encouraging ticket/callback creation when closed, notifying executives
@@ -1435,7 +1489,7 @@ Documented in other files but not built yet — do not assume these exist:
   "Visitor Request" as a ticket source and §21 implies visitors can "view
   only their own tickets," but no visitor-facing ticket endpoint exists;
   a visitor's request is relayed into a ticket by staff (`source:
-  VISITOR_REQUEST`), not self-served.
+VISITOR_REQUEST`), not self-served.
 - AI Ticket Creation (`TICKET_SYSTEM.md` §11 — the AI recommending and,
   with visitor confirmation, creating a ticket) — no Escalation Detection
   or AI-driven flow exists to trigger it from.
@@ -1452,7 +1506,7 @@ Documented in other files but not built yet — do not assume these exist:
 - A dedicated Lead audit-trail collection and full-text/multi-field lead
   search (`LEAD_MANAGEMENT.md` §16, §18) — neither "Audit" nor "Search"
   were in Phase 13's explicit scope (`Lead Detection, Lead CRUD, AI
-  Summary, Assignment, Follow-up, Conversion`), unlike Phase 12's Ticket
+Summary, Assignment, Follow-up, Conversion`), unlike Phase 12's Ticket
   System which explicitly asked for both.
 - Lead scoring rule configuration and Export
   (`LEAD_MANAGEMENT.md` §13's "Administrators can also configure lead
@@ -1511,7 +1565,7 @@ Documented in other files but not built yet — do not assume these exist:
 - Export (`ANALYTICS.md` §16 — CSV/Excel/PDF) and Real-Time Updates
   (`ANALYTICS.md` §17 — Socket.io-pushed dashboard changes) — not in
   Phase 15's explicit scope (`Event Collection, Dashboard APIs, Metrics,
-  Reports, Aggregations`); every analytics endpoint is pull-only REST.
+Reports, Aggregations`); every analytics endpoint is pull-only REST.
 - Data Retention/archival policy (`ANALYTICS.md` §19) — `analytics_events`
   has no TTL index or archival job; every event is kept indefinitely.
 - Analytics only reflects activity recorded from Phase 15 onward — the

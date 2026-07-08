@@ -35,30 +35,30 @@ General rules:
 
 # 3. Collection Ownership
 
-| Collection | Owner Module |
-|------------|--------------|
-| users | Auth |
-| visitors | Visitor |
-| visitor_sessions | Visitor |
-| conversations | Chat |
-| messages | Chat |
-| conversation_audit_logs | Chat |
-| executives | Executive |
-| tickets | Ticket |
-| ticket_notes | Ticket |
-| ticket_audit_logs | Ticket |
-| ticket_counters | Ticket |
-| leads | Lead |
-| knowledge_base | Knowledge |
-| knowledge_base_versions | Knowledge |
-| knowledge_embeddings | Knowledge |
-| ai_settings | Settings |
-| widget_settings | Settings |
-| business_hours | Settings |
-| analytics_events | Analytics |
-| conversation_summaries | AI |
-| prompts | AI |
-| prompt_versions | AI |
+| Collection              | Owner Module |
+| ----------------------- | ------------ |
+| users                   | Auth         |
+| visitors                | Visitor      |
+| visitor_sessions        | Visitor      |
+| conversations           | Chat         |
+| messages                | Chat         |
+| conversation_audit_logs | Chat         |
+| executives              | Executive    |
+| tickets                 | Ticket       |
+| ticket_notes            | Ticket       |
+| ticket_audit_logs       | Ticket       |
+| ticket_counters         | Ticket       |
+| leads                   | Lead         |
+| knowledge_base          | Knowledge    |
+| knowledge_base_versions | Knowledge    |
+| knowledge_embeddings    | Knowledge    |
+| ai_settings             | Settings     |
+| widget_settings         | Settings     |
+| business_hours          | Settings     |
+| analytics_events        | Analytics    |
+| conversation_summaries  | AI           |
+| prompts                 | AI           |
+| prompt_versions         | AI           |
 
 ---
 
@@ -968,7 +968,7 @@ wall-clock, for status; local wall-clock -> UTC instant, for callback
 slot suggestions) are handled via the standard "format, compare, adjust"
 technique. The one known limitation: converting a wall-clock time that
 falls in the ambiguous or skipped hour of a DST transition itself can be
-off by an hour — acceptable for a callback-slot *suggestion*, not used
+off by an hour — acceptable for a callback-slot _suggestion_, not used
 anywhere safety-critical.
 
 ---
@@ -1297,20 +1297,20 @@ Archived
 
 ## Design Principles
 
-* A conversation must never be recreated after it has been started.
-* Ticket creation must not create a new conversation.
-* Executive assignment must not create a new conversation.
-* All AI messages and executive messages belong to the same conversation.
-* Conversation history must remain complete throughout the entire lifecycle.
-* AI summaries, visitor information, ticket references, and lead information must be linked to the original conversation.
-* Archived conversations must remain available for reporting, analytics, and future reference.
+- A conversation must never be recreated after it has been started.
+- Ticket creation must not create a new conversation.
+- Executive assignment must not create a new conversation.
+- All AI messages and executive messages belong to the same conversation.
+- Conversation history must remain complete throughout the entire lifecycle.
+- AI summaries, visitor information, ticket references, and lead information must be linked to the original conversation.
+- Archived conversations must remain available for reporting, analytics, and future reference.
 
 The Conversation collection is the parent entity for:
 
-* Messages
-* AI Summary
-* Ticket
-* Executive Assignment
-* Lead Information
-* Conversation Analytics
-* Conversation Status History
+- Messages
+- AI Summary
+- Ticket
+- Executive Assignment
+- Lead Information
+- Conversation Analytics
+- Conversation Status History
